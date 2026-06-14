@@ -1,0 +1,32 @@
+# ---- Unreal Engine generated / build artifacts (regenerated locally) ----
+# Matches these folders at any depth (project root and every plugin)
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+Build/
+Platforms/*/Binaries/
+Platforms/*/Intermediate/
+
+# Visual Studio / Rider / IDE
+.vs/
+.idea/
+.vscode/
+*.VC.db
+*.VC.opendb
+*.opensdf
+*.opendb
+*.sdf
+*.sln
+*.suo
+*.user
+*.xcodeproj/
+*.xcworkspace/
+
+# Misc
+*.tmp
+*.log
+*.pdb
+
+# Local-only Claude Code settings (machine-specific MCP enablement)
+.claude/settings.local.json
