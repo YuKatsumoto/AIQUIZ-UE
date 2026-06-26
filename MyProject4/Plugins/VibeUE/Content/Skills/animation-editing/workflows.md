@@ -51,7 +51,7 @@ if r.success:
         ass.cancel_preview(anim_path)   # or accept clamped values if r.was_clamped
 ```
 
-Runnable: `scripts/preview_validate_bake.pyx`.
+Runnable: `scripts/preview_validate_bake.txt`.
 
 ## Multi-bone atomic edit
 
@@ -68,7 +68,7 @@ if r.success and ass.validate_pose("/Game/Anims/AS_Wave", True).is_valid:
     ass.bake_preview_to_keyframes("/Game/Anims/AS_Wave", 0, -1, "cubic")
 ```
 
-Runnable: `scripts/multi_bone_edit.pyx`.
+Runnable: `scripts/multi_bone_edit.txt`.
 
 ## Set manual constraints for a bone
 
@@ -90,10 +90,10 @@ c = unreal.SkeletonService.learn_from_animations("/Game/Characters/SK_Mannequin"
 print(c.animation_count, c.total_samples)
 for r in c.bone_ranges:
     if "arm" in r.bone_name.lower():
-        print(r.bone_name, r.percentile_5, "->", r.percentile_95)
+        print(r.bone_name, r.percentile5, "->", r.percentile95)
 ```
 
-Runnable: `scripts/learn_constraints.pyx`.
+Runnable: `scripts/learn_constraints.txt`.
 
 ## Copy pose between animations
 
@@ -109,7 +109,7 @@ import unreal
 unreal.AnimSequenceService.mirror_pose("/Game/Anims/AS_Wave_Right", 15, "X")
 ```
 
-Runnable: `scripts/mirror_pose.pyx`.
+Runnable: `scripts/mirror_pose.txt`.
 
 ## Preview on a different skeleton (retargeting)
 

@@ -19,6 +19,63 @@
 // Static map for skeleton modifiers - using TStrongObjectPtr for GC safety
 TMap<FString, TStrongObjectPtr<USkeletonModifier>> USkeletonService::ActiveModifiers;
 
+namespace
+{
+	// Guard against mutating bone STRUCTURE on engine or SHARED skeletons (issue #466).
+	// reparent/add/rename of bones edits the underlying USkeleton; doing that on a skeleton
+	// shared by several skeletal meshes (or an engine/template skeleton) corrupts every mesh
+	// that uses it. We refuse with an actionable error instead of silently committing.
+	bool IsProtectedSkeletonForStructureEdit(USkeletalMesh* Mesh, FString& OutReason)
+	{
+		if (!Mesh)
+		{
+			return false;
+		}
+		USkeleton* Skeleton = Mesh->GetSkeleton();
+		if (!Skeleton)
+		{
+			return false;
+		}
+
+		const FString SkeletonPath = Skeleton->GetPathName();
+		if (SkeletonPath.StartsWith(TEXT("/Engine/")))
+		{
+			OutReason = FString::Printf(TEXT("skeleton '%s' is engine content"), *SkeletonPath);
+			return true;
+		}
+
+		// Count how many SkeletalMesh assets reference this skeleton's package.
+		FAssetRegistryModule& ARM = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+		IAssetRegistry& AR = ARM.Get();
+		TArray<FName> Referencers;
+		AR.GetReferencers(Skeleton->GetOutermost()->GetFName(), Referencers);
+
+		int32 MeshCount = 0;
+		const FTopLevelAssetPath SkelMeshClass = USkeletalMesh::StaticClass()->GetClassPathName();
+		for (const FName& RefPkg : Referencers)
+		{
+			TArray<FAssetData> Assets;
+			AR.GetAssetsByPackageName(RefPkg, Assets);
+			for (const FAssetData& AD : Assets)
+			{
+				if (AD.AssetClassPath == SkelMeshClass)
+				{
+					++MeshCount;
+					break;
+				}
+			}
+		}
+		if (MeshCount > 1)
+		{
+			OutReason = FString::Printf(
+				TEXT("skeleton '%s' is shared by %d skeletal meshes — editing its bone structure would affect all of them"),
+				*SkeletonPath, MeshCount);
+			return true;
+		}
+		return false;
+	}
+}
+
 // ============================================================================
 // PRIVATE HELPERS
 // ============================================================================
@@ -349,229 +406,6 @@ FString USkeletonService::GetSkeletonForMesh(const FString& SkeletalMeshPath)
 // BONE HIERARCHY
 // ============================================================================
 
-TArray<FBoneNodeInfo> USkeletonService::ListBones(const FString& AssetPath)
-{
-	TArray<FBoneNodeInfo> Results;
-
-	const FReferenceSkeleton* RefSkel = GetReferenceSkeleton(AssetPath);
-	if (!RefSkel)
-	{
-		return Results;
-	}
-
-	const int32 NumBones = RefSkel->GetNum();
-	Results.Reserve(NumBones);
-
-	// First pass: create all bone entries
-	for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
-	{
-		FBoneNodeInfo BoneInfo;
-		BoneInfo.BoneName = RefSkel->GetBoneName(BoneIndex).ToString();
-		BoneInfo.BoneIndex = BoneIndex;
-		BoneInfo.ParentBoneIndex = RefSkel->GetParentIndex(BoneIndex);
-
-		if (BoneInfo.ParentBoneIndex >= 0)
-		{
-			BoneInfo.ParentBoneName = RefSkel->GetBoneName(BoneInfo.ParentBoneIndex).ToString();
-		}
-
-		BoneInfo.LocalTransform = RefSkel->GetRefBonePose()[BoneIndex];
-
-		// Calculate depth
-		int32 Depth = 0;
-		int32 ParentIdx = BoneInfo.ParentBoneIndex;
-		while (ParentIdx >= 0)
-		{
-			Depth++;
-			ParentIdx = RefSkel->GetParentIndex(ParentIdx);
-		}
-		BoneInfo.Depth = Depth;
-
-		Results.Add(BoneInfo);
-	}
-
-	// Second pass: calculate children and global transforms
-	for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
-	{
-		// Find children
-		for (int32 ChildIndex = 0; ChildIndex < NumBones; ++ChildIndex)
-		{
-			if (RefSkel->GetParentIndex(ChildIndex) == BoneIndex)
-			{
-				Results[BoneIndex].Children.Add(RefSkel->GetBoneName(ChildIndex).ToString());
-				Results[BoneIndex].ChildCount++;
-			}
-		}
-
-		// Calculate global transform by walking up the hierarchy
-		FTransform GlobalTransform = Results[BoneIndex].LocalTransform;
-		int32 ParentIdx = Results[BoneIndex].ParentBoneIndex;
-		while (ParentIdx >= 0)
-		{
-			GlobalTransform = GlobalTransform * RefSkel->GetRefBonePose()[ParentIdx];
-			ParentIdx = RefSkel->GetParentIndex(ParentIdx);
-		}
-		Results[BoneIndex].GlobalTransform = GlobalTransform;
-	}
-
-	// Get retargeting modes from skeleton if available
-	USkeleton* Skeleton = GetSkeletonFromAsset(AssetPath);
-	if (Skeleton)
-	{
-		for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
-		{
-			EBoneTranslationRetargetingMode::Type Mode = Skeleton->GetBoneTranslationRetargetingMode(BoneIndex);
-			Results[BoneIndex].RetargetingMode = RetargetingModeToString(Mode);
-		}
-	}
-
-	return Results;
-}
-
-bool USkeletonService::GetBoneInfo(const FString& AssetPath, const FString& BoneName, FBoneNodeInfo& OutInfo)
-{
-	const FReferenceSkeleton* RefSkel = GetReferenceSkeleton(AssetPath);
-	if (!RefSkel)
-	{
-		return false;
-	}
-
-	int32 BoneIndex = RefSkel->FindBoneIndex(FName(*BoneName));
-	if (BoneIndex == INDEX_NONE)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("USkeletonService::GetBoneInfo: Bone not found: %s"), *BoneName);
-		return false;
-	}
-
-	OutInfo.BoneName = BoneName;
-	OutInfo.BoneIndex = BoneIndex;
-	OutInfo.ParentBoneIndex = RefSkel->GetParentIndex(BoneIndex);
-
-	if (OutInfo.ParentBoneIndex >= 0)
-	{
-		OutInfo.ParentBoneName = RefSkel->GetBoneName(OutInfo.ParentBoneIndex).ToString();
-	}
-
-	OutInfo.LocalTransform = RefSkel->GetRefBonePose()[BoneIndex];
-
-	// Calculate depth
-	int32 Depth = 0;
-	int32 ParentIdx = OutInfo.ParentBoneIndex;
-	while (ParentIdx >= 0)
-	{
-		Depth++;
-		ParentIdx = RefSkel->GetParentIndex(ParentIdx);
-	}
-	OutInfo.Depth = Depth;
-
-	// Calculate global transform
-	FTransform GlobalTransform = OutInfo.LocalTransform;
-	ParentIdx = OutInfo.ParentBoneIndex;
-	while (ParentIdx >= 0)
-	{
-		GlobalTransform = GlobalTransform * RefSkel->GetRefBonePose()[ParentIdx];
-		ParentIdx = RefSkel->GetParentIndex(ParentIdx);
-	}
-	OutInfo.GlobalTransform = GlobalTransform;
-
-	// Find children
-	const int32 NumBones = RefSkel->GetNum();
-	for (int32 ChildIndex = 0; ChildIndex < NumBones; ++ChildIndex)
-	{
-		if (RefSkel->GetParentIndex(ChildIndex) == BoneIndex)
-		{
-			OutInfo.Children.Add(RefSkel->GetBoneName(ChildIndex).ToString());
-			OutInfo.ChildCount++;
-		}
-	}
-
-	// Get retargeting mode
-	USkeleton* Skeleton = GetSkeletonFromAsset(AssetPath);
-	if (Skeleton)
-	{
-		EBoneTranslationRetargetingMode::Type Mode = Skeleton->GetBoneTranslationRetargetingMode(BoneIndex);
-		OutInfo.RetargetingMode = RetargetingModeToString(Mode);
-	}
-
-	return true;
-}
-
-FString USkeletonService::GetBoneParent(const FString& AssetPath, const FString& BoneName)
-{
-	const FReferenceSkeleton* RefSkel = GetReferenceSkeleton(AssetPath);
-	if (!RefSkel)
-	{
-		return FString();
-	}
-
-	int32 BoneIndex = RefSkel->FindBoneIndex(FName(*BoneName));
-	if (BoneIndex == INDEX_NONE)
-	{
-		return FString();
-	}
-
-	int32 ParentIndex = RefSkel->GetParentIndex(BoneIndex);
-	if (ParentIndex >= 0)
-	{
-		return RefSkel->GetBoneName(ParentIndex).ToString();
-	}
-
-	return FString();
-}
-
-TArray<FString> USkeletonService::GetBoneChildren(const FString& AssetPath, const FString& BoneName, bool bRecursive)
-{
-	TArray<FString> Results;
-
-	const FReferenceSkeleton* RefSkel = GetReferenceSkeleton(AssetPath);
-	if (!RefSkel)
-	{
-		return Results;
-	}
-
-	int32 BoneIndex = RefSkel->FindBoneIndex(FName(*BoneName));
-	if (BoneIndex == INDEX_NONE)
-	{
-		return Results;
-	}
-
-	const int32 NumBones = RefSkel->GetNum();
-
-	if (bRecursive)
-	{
-		// Use a queue to process all descendants
-		TArray<int32> ToProcess;
-		ToProcess.Add(BoneIndex);
-
-		while (ToProcess.Num() > 0)
-		{
-			int32 CurrentIndex = ToProcess.Pop();
-
-			for (int32 ChildIndex = 0; ChildIndex < NumBones; ++ChildIndex)
-			{
-				if (RefSkel->GetParentIndex(ChildIndex) == CurrentIndex)
-				{
-					Results.Add(RefSkel->GetBoneName(ChildIndex).ToString());
-					ToProcess.Add(ChildIndex);
-				}
-			}
-		}
-	}
-	else
-	{
-		// Just direct children
-		for (int32 ChildIndex = 0; ChildIndex < NumBones; ++ChildIndex)
-		{
-			if (RefSkel->GetParentIndex(ChildIndex) == BoneIndex)
-			{
-				Results.Add(RefSkel->GetBoneName(ChildIndex).ToString());
-			}
-		}
-	}
-
-	return Results;
-}
-
 FTransform USkeletonService::GetBoneTransform(const FString& AssetPath, const FString& BoneName, bool bComponentSpace)
 {
 	const FReferenceSkeleton* RefSkel = GetReferenceSkeleton(AssetPath);
@@ -603,46 +437,21 @@ FTransform USkeletonService::GetBoneTransform(const FString& AssetPath, const FS
 	return GlobalTransform;
 }
 
-FString USkeletonService::GetRootBone(const FString& AssetPath)
-{
-	const FReferenceSkeleton* RefSkel = GetReferenceSkeleton(AssetPath);
-	if (!RefSkel || RefSkel->GetNum() == 0)
-	{
-		return FString();
-	}
-
-	return RefSkel->GetBoneName(0).ToString();
-}
-
-TArray<FString> USkeletonService::FindBones(const FString& AssetPath, const FString& SearchPattern)
-{
-	TArray<FString> Results;
-
-	const FReferenceSkeleton* RefSkel = GetReferenceSkeleton(AssetPath);
-	if (!RefSkel)
-	{
-		return Results;
-	}
-
-	const int32 NumBones = RefSkel->GetNum();
-	for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
-	{
-		FString BoneName = RefSkel->GetBoneName(BoneIndex).ToString();
-		if (BoneName.Contains(SearchPattern, ESearchCase::IgnoreCase))
-		{
-			Results.Add(BoneName);
-		}
-	}
-
-	return Results;
-}
-
 // ============================================================================
 // BONE MODIFICATION
 // ============================================================================
 
 bool USkeletonService::AddBone(const FString& SkeletalMeshPath, const FString& BoneName, const FString& ParentBoneName, const FTransform& LocalTransform)
 {
+	{
+		FString ProtectReason;
+		if (IsProtectedSkeletonForStructureEdit(LoadSkeletalMesh(SkeletalMeshPath), ProtectReason))
+		{
+			UE_LOG(LogTemp, Error, TEXT("USkeletonService::AddBone: refused — %s. Duplicate the mesh/skeleton first and edit the copy."), *ProtectReason);
+			return false;
+		}
+	}
+
 	USkeletonModifier* Modifier = GetSkeletonModifier(SkeletalMeshPath);
 	if (!Modifier)
 	{
@@ -655,6 +464,15 @@ bool USkeletonService::AddBone(const FString& SkeletalMeshPath, const FString& B
 
 bool USkeletonService::RemoveBone(const FString& SkeletalMeshPath, const FString& BoneName, bool bRemoveChildren)
 {
+	{
+		FString ProtectReason;
+		if (IsProtectedSkeletonForStructureEdit(LoadSkeletalMesh(SkeletalMeshPath), ProtectReason))
+		{
+			UE_LOG(LogTemp, Error, TEXT("USkeletonService::RemoveBone: refused — %s. Duplicate the mesh/skeleton first and edit the copy."), *ProtectReason);
+			return false;
+		}
+	}
+
 	USkeletonModifier* Modifier = GetSkeletonModifier(SkeletalMeshPath);
 	if (!Modifier)
 	{
@@ -667,6 +485,15 @@ bool USkeletonService::RemoveBone(const FString& SkeletalMeshPath, const FString
 
 bool USkeletonService::RenameBone(const FString& SkeletalMeshPath, const FString& OldBoneName, const FString& NewBoneName)
 {
+	{
+		FString ProtectReason;
+		if (IsProtectedSkeletonForStructureEdit(LoadSkeletalMesh(SkeletalMeshPath), ProtectReason))
+		{
+			UE_LOG(LogTemp, Error, TEXT("USkeletonService::RenameBone: refused — %s. Duplicate the mesh/skeleton first and edit the copy."), *ProtectReason);
+			return false;
+		}
+	}
+
 	USkeletonModifier* Modifier = GetSkeletonModifier(SkeletalMeshPath);
 	if (!Modifier)
 	{
@@ -683,6 +510,15 @@ bool USkeletonService::ReparentBone(const FString& SkeletalMeshPath, const FStri
 	// during commit, which triggers a modal dialog that blocks the game thread.
 	// Instead, we implement reparenting as: remove bone+descendants, add bone with new parent, add descendants back.
 	
+	{
+		FString ProtectReason;
+		if (IsProtectedSkeletonForStructureEdit(LoadSkeletalMesh(SkeletalMeshPath), ProtectReason))
+		{
+			UE_LOG(LogTemp, Error, TEXT("USkeletonService::ReparentBone: refused — %s. Duplicate the mesh/skeleton first and edit the copy."), *ProtectReason);
+			return false;
+		}
+	}
+
 	USkeletonModifier* Modifier = GetSkeletonModifier(SkeletalMeshPath);
 	if (!Modifier)
 	{
@@ -891,218 +727,6 @@ bool USkeletonService::IsSkeletonShared(const FString& SkeletalMeshPath)
 	// If there's more than one referencer (the skeletal mesh we're querying),
 	// the skeleton is shared
 	return Referencers.Num() > 1;
-}
-
-// ============================================================================
-// SOCKET MANAGEMENT
-// ============================================================================
-
-TArray<FMeshSocketInfo> USkeletonService::ListSockets(const FString& SkeletalMeshPath)
-{
-	TArray<FMeshSocketInfo> Results;
-
-	USkeletalMesh* Mesh = LoadSkeletalMesh(SkeletalMeshPath);
-	if (!Mesh)
-	{
-		return Results;
-	}
-
-	const int32 NumSockets = Mesh->NumSockets();
-	Results.Reserve(NumSockets);
-
-	for (int32 i = 0; i < NumSockets; ++i)
-	{
-		USkeletalMeshSocket* Socket = Mesh->GetSocketByIndex(i);
-		if (Socket)
-		{
-			FMeshSocketInfo SocketInfo;
-			SocketInfo.SocketName = Socket->SocketName.ToString();
-			SocketInfo.BoneName = Socket->BoneName.ToString();
-			SocketInfo.RelativeLocation = Socket->RelativeLocation;
-			SocketInfo.RelativeRotation = Socket->RelativeRotation;
-			SocketInfo.RelativeScale = Socket->RelativeScale;
-			SocketInfo.bForceAlwaysAnimated = Socket->bForceAlwaysAnimated;
-			Results.Add(SocketInfo);
-		}
-	}
-
-	return Results;
-}
-
-bool USkeletonService::GetSocketInfo(const FString& SkeletalMeshPath, const FString& SocketName, FMeshSocketInfo& OutInfo)
-{
-	USkeletalMesh* Mesh = LoadSkeletalMesh(SkeletalMeshPath);
-	if (!Mesh)
-	{
-		return false;
-	}
-
-	int32 SocketIndex;
-	USkeletalMeshSocket* Socket = Mesh->FindSocketAndIndex(FName(*SocketName), SocketIndex);
-	if (!Socket)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("USkeletonService::GetSocketInfo: Socket not found: %s"), *SocketName);
-		return false;
-	}
-
-	OutInfo.SocketName = Socket->SocketName.ToString();
-	OutInfo.BoneName = Socket->BoneName.ToString();
-	OutInfo.RelativeLocation = Socket->RelativeLocation;
-	OutInfo.RelativeRotation = Socket->RelativeRotation;
-	OutInfo.RelativeScale = Socket->RelativeScale;
-	OutInfo.bForceAlwaysAnimated = Socket->bForceAlwaysAnimated;
-
-	return true;
-}
-
-bool USkeletonService::AddSocket(const FString& SkeletalMeshPath, const FString& SocketName, const FString& BoneName,
-	FVector RelativeLocation, FRotator RelativeRotation, FVector RelativeScale, bool bAddToSkeleton)
-{
-	USkeletalMesh* Mesh = LoadSkeletalMesh(SkeletalMeshPath);
-	if (!Mesh)
-	{
-		return false;
-	}
-
-	// Verify the bone exists
-	int32 BoneIndex = Mesh->GetRefSkeleton().FindBoneIndex(FName(*BoneName));
-	if (BoneIndex == INDEX_NONE)
-	{
-		UE_LOG(LogTemp, Error, TEXT("USkeletonService::AddSocket: Bone not found: %s"), *BoneName);
-		return false;
-	}
-
-	// Check if socket already exists
-	int32 ExistingIndex;
-	if (Mesh->FindSocketAndIndex(FName(*SocketName), ExistingIndex))
-	{
-		UE_LOG(LogTemp, Error, TEXT("USkeletonService::AddSocket: Socket already exists: %s"), *SocketName);
-		return false;
-	}
-
-	// Create the socket
-	USkeletalMeshSocket* NewSocket = NewObject<USkeletalMeshSocket>(Mesh);
-	NewSocket->SocketName = FName(*SocketName);
-	NewSocket->BoneName = FName(*BoneName);
-	NewSocket->RelativeLocation = RelativeLocation;
-	NewSocket->RelativeRotation = RelativeRotation;
-	NewSocket->RelativeScale = RelativeScale;
-
-	// Add to mesh
-	Mesh->AddSocket(NewSocket, bAddToSkeleton);
-	Mesh->MarkPackageDirty();
-
-	return true;
-}
-
-bool USkeletonService::RemoveSocket(const FString& SkeletalMeshPath, const FString& SocketName)
-{
-	USkeletalMesh* Mesh = LoadSkeletalMesh(SkeletalMeshPath);
-	if (!Mesh)
-	{
-		return false;
-	}
-
-	// Find and remove from mesh-only sockets
-	TArray<TObjectPtr<USkeletalMeshSocket>>& MeshSockets = Mesh->GetMeshOnlySocketList();
-	int32 SocketIndex = INDEX_NONE;
-	for (int32 i = 0; i < MeshSockets.Num(); ++i)
-	{
-		if (MeshSockets[i] && MeshSockets[i]->SocketName == FName(*SocketName))
-		{
-			SocketIndex = i;
-			break;
-		}
-	}
-
-	if (SocketIndex == INDEX_NONE)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("USkeletonService::RemoveSocket: Socket not found in mesh-only sockets: %s"), *SocketName);
-		return false;
-	}
-
-	// Remove from mesh sockets
-	MeshSockets.RemoveAt(SocketIndex);
-	Mesh->MarkPackageDirty();
-
-	return true;
-}
-
-bool USkeletonService::RenameSocket(const FString& SkeletalMeshPath, const FString& OldName, const FString& NewName)
-{
-	USkeletalMesh* Mesh = LoadSkeletalMesh(SkeletalMeshPath);
-	if (!Mesh)
-	{
-		return false;
-	}
-
-	int32 SocketIndex;
-	USkeletalMeshSocket* Socket = Mesh->FindSocketAndIndex(FName(*OldName), SocketIndex);
-	if (!Socket)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("USkeletonService::RenameSocket: Socket not found: %s"), *OldName);
-		return false;
-	}
-
-	Socket->SocketName = FName(*NewName);
-	Mesh->MarkPackageDirty();
-
-	return true;
-}
-
-bool USkeletonService::SetSocketTransform(const FString& SkeletalMeshPath, const FString& SocketName,
-	const FVector& RelativeLocation, const FRotator& RelativeRotation, const FVector& RelativeScale)
-{
-	USkeletalMesh* Mesh = LoadSkeletalMesh(SkeletalMeshPath);
-	if (!Mesh)
-	{
-		return false;
-	}
-
-	int32 SocketIndex;
-	USkeletalMeshSocket* Socket = Mesh->FindSocketAndIndex(FName(*SocketName), SocketIndex);
-	if (!Socket)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("USkeletonService::SetSocketTransform: Socket not found: %s"), *SocketName);
-		return false;
-	}
-
-	Socket->RelativeLocation = RelativeLocation;
-	Socket->RelativeRotation = RelativeRotation;
-	Socket->RelativeScale = RelativeScale;
-	Mesh->MarkPackageDirty();
-
-	return true;
-}
-
-bool USkeletonService::SetSocketBone(const FString& SkeletalMeshPath, const FString& SocketName, const FString& NewBoneName)
-{
-	USkeletalMesh* Mesh = LoadSkeletalMesh(SkeletalMeshPath);
-	if (!Mesh)
-	{
-		return false;
-	}
-
-	// Verify the new bone exists
-	int32 BoneIndex = Mesh->GetRefSkeleton().FindBoneIndex(FName(*NewBoneName));
-	if (BoneIndex == INDEX_NONE)
-	{
-		UE_LOG(LogTemp, Error, TEXT("USkeletonService::SetSocketBone: Bone not found: %s"), *NewBoneName);
-		return false;
-	}
-
-	int32 SocketIndex;
-	USkeletalMeshSocket* Socket = Mesh->FindSocketAndIndex(FName(*SocketName), SocketIndex);
-	if (!Socket)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("USkeletonService::SetSocketBone: Socket not found: %s"), *SocketName);
-		return false;
-	}
-
-	Socket->BoneName = FName(*NewBoneName);
-	Mesh->MarkPackageDirty();
-
-	return true;
 }
 
 // ============================================================================
@@ -1424,35 +1048,6 @@ bool USkeletonService::SetBlendProfileBone(const FString& SkeletonPath, const FS
 // SKELETAL MESH PROPERTIES
 // ============================================================================
 
-bool USkeletonService::SetPhysicsAsset(const FString& SkeletalMeshPath, const FString& PhysicsAssetPath)
-{
-	USkeletalMesh* Mesh = LoadSkeletalMesh(SkeletalMeshPath);
-	if (!Mesh)
-	{
-		return false;
-	}
-
-	if (PhysicsAssetPath.IsEmpty())
-	{
-		Mesh->SetPhysicsAsset(nullptr);
-	}
-	else
-	{
-		UE_LOG(LogTemp, Log, TEXT("USkeletonService::GetSkeletalMeshInfo: Loading physics asset: %s"), *PhysicsAssetPath);
-		UObject* LoadedAsset = UEditorAssetLibrary::LoadAsset(PhysicsAssetPath);
-		UPhysicsAsset* PhysAsset = Cast<UPhysicsAsset>(LoadedAsset);
-		if (!PhysAsset)
-		{
-			UE_LOG(LogTemp, Error, TEXT("USkeletonService::SetPhysicsAsset: Failed to load physics asset: %s"), *PhysicsAssetPath);
-			return false;
-		}
-		Mesh->SetPhysicsAsset(PhysAsset);
-	}
-
-	Mesh->MarkPackageDirty();
-	return true;
-}
-
 bool USkeletonService::SetPostProcessAnimBlueprint(const FString& SkeletalMeshPath, const FString& AnimBlueprintPath)
 {
 	USkeletalMesh* Mesh = LoadSkeletalMesh(SkeletalMeshPath);
@@ -1489,27 +1084,6 @@ bool USkeletonService::SetPostProcessAnimBlueprint(const FString& SkeletalMeshPa
 
 	Mesh->MarkPackageDirty();
 	return true;
-}
-
-TArray<FString> USkeletonService::ListMorphTargets(const FString& SkeletalMeshPath)
-{
-	TArray<FString> Results;
-
-	USkeletalMesh* Mesh = LoadSkeletalMesh(SkeletalMeshPath);
-	if (!Mesh)
-	{
-		return Results;
-	}
-
-	for (UMorphTarget* MorphTarget : Mesh->GetMorphTargets())
-	{
-		if (MorphTarget)
-		{
-			Results.Add(MorphTarget->GetName());
-		}
-	}
-
-	return Results;
 }
 
 // ============================================================================
@@ -1729,9 +1303,13 @@ bool USkeletonService::LearnFromAnimations(
 		}
 	}
 
-	// Apply limits
-	const int32 HardLimit = 10;  // Reduced for safety
+	// Apply limits. Honor the caller's MaxAnimations up to a generous safety ceiling
+	// (was hard-capped at 10, which silently ignored larger requests — issue #447).
+	const int32 HardLimit = 200;
 	int32 MaxToProcess = MaxAnimations > 0 ? FMath::Min(MaxAnimations, HardLimit) : HardLimit;
+
+	// Sample this many evenly-spaced frames per animation (was effectively 1: the ref pose).
+	const int32 SamplesToTake = FMath::Clamp(SamplesPerAnimation, 1, 1000);
 
 	// Use Asset Registry to process ONE animation at a time (no batch list)
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
@@ -1789,6 +1367,10 @@ bool USkeletonService::LearnFromAnimations(
 		}
 
 		// ========== SAMPLE PHASE ==========
+		// Sample the ACTUAL ANIMATED local-space bone rotations at evenly-spaced frames
+		// across the clip (previously this sampled the static ref/bind pose once per bone,
+		// so SamplesPerAnimation was ignored and every sample was identical → degenerate
+		// min==max==percentile constraints). (issue #447)
 		int32 SamplesFromThisAnim = 0;
 		const FReferenceSkeleton& AnimRefSkeleton = AnimSkeleton->GetReferenceSkeleton();
 		int32 AnimBoneCount = AnimRefSkeleton.GetNum();
@@ -1798,20 +1380,33 @@ bool USkeletonService::LearnFromAnimations(
 			continue;
 		}
 
-		for (int32 BoneIndex = 0; BoneIndex < AnimBoneCount; BoneIndex++)
+		const float PlayLength = AnimSeq->GetPlayLength();
+		for (int32 SampleIdx = 0; SampleIdx < SamplesToTake; SampleIdx++)
 		{
-			FName BoneFName = AnimRefSkeleton.GetBoneName(BoneIndex);
-			FString BoneName = BoneFName.ToString();
-			if (!BoneRotationSamples.Contains(BoneName))
-			{
-				continue;
-			}
+			// Evenly-spaced times across [0, PlayLength] (single sample → t=0).
+			const float Time = (SamplesToTake > 1)
+				? (PlayLength * static_cast<float>(SampleIdx) / static_cast<float>(SamplesToTake - 1))
+				: 0.0f;
 
-			const FTransform& RefPose = AnimRefSkeleton.GetRefBonePose()[BoneIndex];
-			FRotator RefRotation = RefPose.GetRotation().Rotator();
-			BoneRotationSamples[BoneName].Add(RefRotation);
-			OutConstraints.TotalSamples++;
-			SamplesFromThisAnim++;
+			for (int32 BoneIndex = 0; BoneIndex < AnimBoneCount; BoneIndex++)
+			{
+				FName BoneFName = AnimRefSkeleton.GetBoneName(BoneIndex);
+				FString BoneName = BoneFName.ToString();
+				if (!BoneRotationSamples.Contains(BoneName))
+				{
+					continue;
+				}
+
+				FTransform BoneTransform;
+				FSkeletonPoseBoneIndex SkeletonBoneIndex(BoneIndex);
+				FAnimExtractContext ExtractionContext(static_cast<double>(Time));
+				AnimSeq->GetBoneTransform(BoneTransform, SkeletonBoneIndex, ExtractionContext, /*bUseRawData=*/true);
+
+				FRotator SampledRotation = BoneTransform.GetRotation().Rotator();
+				BoneRotationSamples[BoneName].Add(SampledRotation);
+				OutConstraints.TotalSamples++;
+				SamplesFromThisAnim++;
+			}
 		}
 
 		UE_LOG(LogTemp, Log, TEXT("LearnFromAnimations: %s - %d samples"), *AnimName, SamplesFromThisAnim);

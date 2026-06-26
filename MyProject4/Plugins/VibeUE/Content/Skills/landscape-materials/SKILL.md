@@ -34,10 +34,7 @@ keywords:
 - **This skill** (`landscape-materials`): Simple materials with 2-5 layers using `LandscapeLayerBlend`. Good for prototyping.
 - **`landscape-auto-material`**: Production materials using material functions, RVT, and material instances. Good for shipping quality. Use when you need the Real_Landscape paradigm with auto-layering, altitude/slope blending via material functions, and biome configuration through material instances.
 
-If you need material functions, Runtime Virtual Textures, or the master-material + instance pattern:
-```python
-vibeue-skills-manager(action="load", skill_name="landscape-auto-material")
-```
+If you need material functions, Runtime Virtual Textures, or the master-material + instance pattern, load the **landscape-auto-material** skill (the engine's AgentSkillToolset `GetSkills` exposes it).
 
 ## Critical Rules
 
@@ -122,7 +119,7 @@ Split into separate steps:
 
 | Task | Sub-doc | Sample script |
 |------|---------|---------------|
-| Create a landscape material (+ layers) | `workflows.md` → Create Complete Landscape Material | `scripts/create_landscape_material.pyx` |
+| Create a landscape material (+ layers) | `workflows.md` → Create Complete Landscape Material | `scripts/create_landscape_material.txt` |
 | Set up a layer with textures | `workflows.md` → Setup Layer with Textures | — |
 | Create layer info objects | `workflows.md` → Create Layer Info Objects | — |
 | Assign material to a landscape | `workflows.md` → Assign Material to Landscape | — |
@@ -139,4 +136,4 @@ Split into separate steps:
 
 ## Sample scripts (run via `execute_python_code`)
 
-- **`scripts/create_landscape_material.pyx`** — create a landscape material with a layer blend, compile, assign.
+- **`scripts/create_landscape_material.txt`** — create a landscape material with a layer blend, compile, assign.

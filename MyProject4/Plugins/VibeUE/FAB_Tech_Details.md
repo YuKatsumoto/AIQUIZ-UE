@@ -1,11 +1,19 @@
-In-Editor AI Chat & MCP Server for Blueprint/UMG/Animation/Niagara/Landscape/Foliage automation. Built-in chat client inside Unreal Engine or connect VS Code, Claude Code, Cursor, and AntiGravity via native C++ HTTP MCP server with 10 discovery/execution tools.
+MCP Expansion + AI Editor Toolset for Unreal Engine 5.8+. Plugs into UE5.8's native MCP server, ToolsetRegistry, and AgentSkill system. 
 
-Python API Services - 30 specialized services with 1020 methods, including ViewportService (19) for full viewport camera/layout control, StateTreeService (94) for full StateTree asset editing, EditorTransactionService (16) for undo/redo and transaction management, MetaSoundService (17) for MetaSound graph authoring, and broad coverage for animation, Blueprints, widgets, landscape, Niagara, audio, settings, and data workflows.
 
-Skills System - 34 lazy-loaded domain skills reducing context overhead 50-65% while maintaining comprehensive domain guidance.
+Module — VibeUE (Editor type), 105 C++ source files. Platform: Win64. Engine: UE 5.8+.
 
-Module: VibeUE (Editor) with 163 C++ classes enabling Blueprint/UMG/Material/Enhanced Input/Data/Landscape/StateTree automation.
 
-Windows 64-bit, Unreal Engine 5.7+, Requires: Python Script Plugin, EditorScriptingUtilities, Enhanced Input, AudioCapture, Niagara, MeshModelingToolset, ModelViewViewModel, StateTree.
+Prerequisites — enable Unreal's native MCP stack and start the MCP server, then point your MCP agent at the endpoint.
 
-Docs: https://www.vibeue.com/docs | FREE API at vibeue.com or use OpenRouter for Claude/GPT-4 | No Python dependency - native C++
+
+Dependencies — VibeUE declares and auto-enables every engine plugin it needs: PythonScriptPlugin, EditorScriptingUtilities, EnhancedInput, Niagara, MeshModelingToolset, ModelViewViewModel, StateTree, MetaSound, GameplayTagsEditor, ToolsetRegistry, and ModelContextProtocol.
+
+
+Setup -  run console command VibeUE.GenerateAgentConfig [ClaudeCode|Gemini|Codex|Cursor|Copilot|All] to write the agent guide to the matching project file (CLAUDE.md, GEMINI.md, AGENTS.md, .github/copilot-instructions.md). 
+
+
+A free API  key (vibeue.com/login), set in Editor Preferences → Plugins → VibeUE, unlocks the real-world terrain tools; every other feature works without it.
+
+
+Docs: https://www.vibeue.com/v5-8

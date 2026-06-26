@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/NoExportTypes.h"
+#include "ToolsetRegistry/ToolsetDefinition.h"
 #include "UMapBlockoutService.generated.h"
 
 /**
@@ -13,8 +13,7 @@
  * MapDesigner spec's pass/fail checks; the orchestrator stops at the first failing
  * gate and reports which check failed.
  *
- * Authoritative spec: docs/design/map-designer-spec.md. The host-Python reference
- * implementation lives at Source/VibeUE/Tests/MapBlockout/reference/.
+ * Authoritative spec: docs/design/map-designer-spec.md.
  */
 
 
@@ -634,7 +633,7 @@ struct FMapBlockoutMaterializeResult
  *           result.final_state.stage1_roads, "Landscape1")
  */
 UCLASS(BlueprintType)
-class VIBEUE_API UMapBlockoutService : public UObject
+class VIBEUE_API UMapBlockoutService : public UToolsetDefinition
 {
 	GENERATED_BODY()
 
@@ -652,12 +651,12 @@ public:
 	 * @param bSynthesizeFloodFromHeight - add an extra layer named "FloodFromHeight"
 	 *        derived from the lowest FloodPercentile% of the heightmap. Useful when
 	 *        the source landscape has no painted water layer — map it as
-	 *        `cfg.layers.flood = "FloodFromHeight"`. Mirrors host-Python's
-	 *        `build_inputs.py --flood-from-height` flag.
+	 *        `cfg.layers.flood = "FloodFromHeight"`. Mirrors the host-Python
+	 *        `--flood-from-height` behaviour.
 	 * @param FloodPercentile            - lowest %% of terrain treated as flood (default 8).
 	 * @return Bounds + height + per-layer weights, or bSuccess=false + ErrorMessage
 	 */
-	UFUNCTION(BlueprintCallable, Category = "VibeUE|MapBlockout")
+	UFUNCTION(BlueprintCallable, meta = (AICallable), Category ="VibeUE|MapBlockout")
 	static FMapBlockoutLandcoverGrid ExportLandcoverGrid(
 		const FString& LandscapeLabel,
 		int32 GridN = 120,
@@ -670,7 +669,7 @@ public:
 	 *
 	 * @return Absolute path of the written file, or empty string on failure.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "VibeUE|MapBlockout")
+	UFUNCTION(BlueprintCallable, meta = (AICallable), Category ="VibeUE|MapBlockout")
 	static FString WriteLandcoverGridJson(
 		const FMapBlockoutLandcoverGrid& Grid,
 		const FString& OutputFilePath);
@@ -680,7 +679,7 @@ public:
 	 * Used by tests / by callers who already have a JSON fixture and want to
 	 * skip the live-landscape export step.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "VibeUE|MapBlockout")
+	UFUNCTION(BlueprintCallable, meta = (AICallable), Category ="VibeUE|MapBlockout")
 	static FMapBlockoutLandcoverGrid LoadLandcoverGridJson(
 		const FString& FilePath);
 
@@ -693,14 +692,14 @@ public:
 	 * spine. Per-point widths come from `2 * dt * meters_per_pixel` so wide rivers
 	 * get wide-river bridges and narrow tributaries get narrow ones.
 	 *
-	 * Mirrors `reference/river_centerline_reference.py` from the host-Python.
+	 * Mirrors the host-Python river-centerline reference algorithm.
 	 *
 	 * @param WaterMask    - binary mask (1 = water)
 	 * @param WorldLo      - landcover grid's WorldLo (sets world-space coords)
 	 * @param WorldHi      - landcover grid's WorldHi
 	 * @param MinLengthCm  - drop polylines shorter than this (Unreal units)
 	 */
-	UFUNCTION(BlueprintCallable, Category = "VibeUE|MapBlockout")
+	UFUNCTION(BlueprintCallable, meta = (AICallable), Category ="VibeUE|MapBlockout")
 	static TArray<FMapBlockoutRiver> ExtractRiverCenterlines(
 		const FMapBlockoutMask& WaterMask,
 		float WorldLo,
@@ -713,20 +712,20 @@ public:
 	// =================================================================
 
 	/** Stage 1 — Roadways. */
-	UFUNCTION(BlueprintCallable, Category = "VibeUE|MapBlockout")
+	UFUNCTION(BlueprintCallable, meta = (AICallable), Category ="VibeUE|MapBlockout")
 	static FMapBlockoutRoadNetworkResult GenerateRoads(
 		const FMapBlockoutLandcoverGrid& Grid,
 		const FMapBlockoutConfig& Config);
 
 	/** Stage 2 — Points of Interest. */
-	UFUNCTION(BlueprintCallable, Category = "VibeUE|MapBlockout")
+	UFUNCTION(BlueprintCallable, meta = (AICallable), Category ="VibeUE|MapBlockout")
 	static FMapBlockoutPOIResult PlacePois(
 		const FMapBlockoutLandcoverGrid& Grid,
 		const FMapBlockoutRoadNetworkResult& Roads,
 		const FMapBlockoutConfig& Config);
 
 	/** Stage 3 — Fields. */
-	UFUNCTION(BlueprintCallable, Category = "VibeUE|MapBlockout")
+	UFUNCTION(BlueprintCallable, meta = (AICallable), Category ="VibeUE|MapBlockout")
 	static FMapBlockoutFieldResult PlaceFields(
 		const FMapBlockoutLandcoverGrid& Grid,
 		const FMapBlockoutRoadNetworkResult& Roads,
@@ -734,7 +733,7 @@ public:
 		const FMapBlockoutConfig& Config);
 
 	/** Stage 4 — Trees, Forests, Underbrush. */
-	UFUNCTION(BlueprintCallable, Category = "VibeUE|MapBlockout")
+	UFUNCTION(BlueprintCallable, meta = (AICallable), Category ="VibeUE|MapBlockout")
 	static FMapBlockoutFoliageResult PlaceFoliage(
 		const FMapBlockoutLandcoverGrid& Grid,
 		const FMapBlockoutRoadNetworkResult& Roads,
@@ -743,7 +742,7 @@ public:
 		const FMapBlockoutConfig& Config);
 
 	/** Stage 5 — Railway + Bridges. */
-	UFUNCTION(BlueprintCallable, Category = "VibeUE|MapBlockout")
+	UFUNCTION(BlueprintCallable, meta = (AICallable), Category ="VibeUE|MapBlockout")
 	static FMapBlockoutRailwayResult PlaceRailway(
 		const FMapBlockoutLandcoverGrid& Grid,
 		const FMapBlockoutRoadNetworkResult& Roads,
@@ -753,7 +752,7 @@ public:
 		const FMapBlockoutConfig& Config);
 
 	/** Final Pass — re-run every prior gate against the cumulative state. */
-	UFUNCTION(BlueprintCallable, Category = "VibeUE|MapBlockout")
+	UFUNCTION(BlueprintCallable, meta = (AICallable), Category ="VibeUE|MapBlockout")
 	static FMapBlockoutGateResult RunFinalPass(const FMapBlockoutState& State);
 
 
@@ -770,7 +769,7 @@ public:
 	 * @param OutputDir  - directory (created if missing)
 	 * @return Absolute file path written, or empty string on failure.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "VibeUE|MapBlockout")
+	UFUNCTION(BlueprintCallable, meta = (AICallable), Category ="VibeUE|MapBlockout")
 	static FString RenderStageSnapshot(
 		int32 Stage,
 		const FMapBlockoutState& State,
@@ -782,7 +781,7 @@ public:
 	 *
 	 * @return Absolute paths of the three files written (empty array on failure).
 	 */
-	UFUNCTION(BlueprintCallable, Category = "VibeUE|MapBlockout")
+	UFUNCTION(BlueprintCallable, meta = (AICallable), Category ="VibeUE|MapBlockout")
 	static TArray<FString> RenderFinalDeliverables(
 		const FMapBlockoutState& State,
 		const FString& OutputDir);
@@ -797,7 +796,7 @@ public:
 	 * Stops at the first failing gate; consumers can read the failing stage's
 	 * Gate field to know what to repair.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "VibeUE|MapBlockout")
+	UFUNCTION(BlueprintCallable, meta = (AICallable), Category ="VibeUE|MapBlockout")
 	static FMapBlockoutPipelineResult RunFullPipeline(
 		const FMapBlockoutLandcoverGrid& Grid,
 		const FMapBlockoutConfig& Config);
@@ -805,7 +804,7 @@ public:
 	/**
 	 * Convenience: ExportLandcoverGrid + RunFullPipeline in one call.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "VibeUE|MapBlockout")
+	UFUNCTION(BlueprintCallable, meta = (AICallable), Category ="VibeUE|MapBlockout")
 	static FMapBlockoutPipelineResult RunFullPipelineForLandscape(
 		const FString& LandscapeLabel,
 		const FMapBlockoutConfig& Config);
@@ -821,7 +820,7 @@ public:
 	 * Main roads and dirt roads are placed on separate splines so they can carry
 	 * different mesh entries.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "VibeUE|MapBlockout")
+	UFUNCTION(BlueprintCallable, meta = (AICallable), Category ="VibeUE|MapBlockout")
 	static FMapBlockoutMaterializeResult MaterializeRoadsAsSplines(
 		const FMapBlockoutRoadNetworkResult& Roads,
 		const FString& LandscapeLabel);
@@ -830,7 +829,7 @@ public:
 	 * Paint the field mask into a landscape weight layer (creates the layer info
 	 * object if it doesn't exist). Reuses ULandscapeService::PaintLayer.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "VibeUE|MapBlockout")
+	UFUNCTION(BlueprintCallable, meta = (AICallable), Category ="VibeUE|MapBlockout")
 	static FMapBlockoutMaterializeResult MaterializeFieldsAsPaint(
 		const FMapBlockoutFieldResult& Fields,
 		const FString& LandscapeLabel,
@@ -844,7 +843,7 @@ public:
 	 *
 	 * @param BuildingMeshPath - optional default mesh for buildings (empty = empty actors)
 	 */
-	UFUNCTION(BlueprintCallable, Category = "VibeUE|MapBlockout")
+	UFUNCTION(BlueprintCallable, meta = (AICallable), Category ="VibeUE|MapBlockout")
 	static FMapBlockoutMaterializeResult MaterializePoisAsActors(
 		const FMapBlockoutPOIResult& Pois,
 		const FString& FolderPath,
@@ -854,7 +853,7 @@ public:
 	 * Scatter foliage instances over the forest/treeline/scrub masks using the
 	 * existing UFoliageService scatter pipeline.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "VibeUE|MapBlockout")
+	UFUNCTION(BlueprintCallable, meta = (AICallable), Category ="VibeUE|MapBlockout")
 	static FMapBlockoutMaterializeResult MaterializeForestAsFoliage(
 		const FMapBlockoutFoliageResult& Foliage,
 		const FString& ForestFoliageTypePath,
@@ -864,7 +863,7 @@ public:
 	/**
 	 * Add railway splines and spawn bridge placeholder actors (one per bridge).
 	 */
-	UFUNCTION(BlueprintCallable, Category = "VibeUE|MapBlockout")
+	UFUNCTION(BlueprintCallable, meta = (AICallable), Category ="VibeUE|MapBlockout")
 	static FMapBlockoutMaterializeResult MaterializeRailwayAndBridges(
 		const FMapBlockoutRailwayResult& Railway,
 		const FString& LandscapeLabel,

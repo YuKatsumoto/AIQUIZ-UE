@@ -1,4 +1,4 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Buckley Builds LLC 2026 All Rights Reserved.
 
 using UnrealBuildTool;
 
@@ -11,6 +11,12 @@ public class VibeUE : ModuleRules
 		IWYUSupport = IWYUSupport.None;
 		// Disable unity builds to ensure each file compiles independently
 		bUseUnity = false;
+		// Treat warnings as errors for THIS module only (adds /WX for our .cpp files,
+		// not the host project or other plugins). This promotes deprecation warnings
+		// such as C4996 to hard errors so UE-version-compat issues (e.g. deprecated
+		// engine APIs) fail the build here instead of surfacing only on contributors'
+		// clean installs. See PR #438.
+		bWarningsAsErrors = true;
 		
 		// Ensure proper debug symbol generation for PDB files
 		if (Target.Configuration == UnrealTargetConfiguration.Debug || 
@@ -39,14 +45,11 @@ public class VibeUE : ModuleRules
 				"CoreUObject",
 				"Engine",
 				"InputCore",
-				"Networking",
-				"Sockets",
-				"HTTP",
+				"HTTP",                 // For DeepResearch / web tools
 				"Json",
 				"JsonUtilities",
 				"DeveloperSettings",
-				"ApplicationCore",      // For FPlatformApplicationMisc (clipboard, etc.)
-				"WebSockets"            // For ElevenLabs WebSocket connection
+				"ApplicationCore"       // For FPlatformApplicationMisc (clipboard, etc.)
 			}
 		);
 
@@ -75,8 +78,6 @@ public class VibeUE : ModuleRules
 				"PropertyEditor",         // For property reflection
 				"EnhancedInput",          // For Enhanced Input System support
 				"InputCore",              // For input types
-				"AudioCapture",           // For microphone input
-				"AudioCaptureCore",       // For FAudioCaptureSynth
 				"ImageWrapper",           // For image encoding/decoding
 				"DesktopPlatform",        // For file dialogs
 				"Niagara",                // For Niagara VFX runtime classes
@@ -100,9 +101,10 @@ public class VibeUE : ModuleRules
 				"MetasoundEngine",        // For UMetaSoundSource, UMetaSoundBuilderSubsystem, UMetaSoundSourceBuilder
 				"MetasoundFrontend",      // For FMetaSoundFrontendDocumentBuilder, FMetasoundFrontendClassName, ISearchEngine
 				"MetasoundGraphCore",     // For core MetaSound graph types
-				"StructUtils",            // For FInstancedStruct / MakeInstancedStruct support
 				"MeshDescription",        // For FMeshDescription / TVertexInstanceAttributesRef (UV editing)
 				"StaticMeshDescription",  // For FStaticMeshAttributes / FStaticMeshOperations / FUVMapParameters
+				"ToolsetRegistry",        // UE 5.8 native AI toolset registry — exposes services as AICallable tools on Epic's MCP endpoint
+				"ModelContextProtocol",   // UE 5.8 native MCP server — VibeUE's dynamic tools are bridged onto Epic's endpoint
 			}
 		);
 
@@ -121,6 +123,7 @@ public class VibeUE : ModuleRules
 					"ContentBrowser",      // For content browser selection queries
 					"MetasoundEditor",     // For UMetaSoundEditorSubsystem (FindOrBeginBuilding, BuildToAsset)
 				"GameplayTagsEditor",  // For IGameplayTagsEditorModule (add/remove/rename tags at editor time)
+				"TraceServices",       // For ITraceServicesModule / IAnalysisService (editor_control analyse action)
 				}
 			);
 		}

@@ -53,7 +53,8 @@ $ExcludeDirectories = @(
     "dist",              # Python distribution directories
     "*.egg-info",        # Python package metadata
     "docs",              # Development documentation (user docs moved to Resources)
-    "node_modules"       # Node.js modules
+    "node_modules",      # Node.js modules
+    "FabImages"          # Marketplace listing screenshots (uploaded to Fab separately, not shipped in plugin)
 )
 
 $ExcludeFiles = @(
@@ -76,6 +77,7 @@ $ExcludeFiles = @(
 
 # Development-only files that shouldn't be in marketplace submission
 $ExcludeDevFiles = @(
+    "LICENSE",               # Custom MIT license — Fab requires the Fab License only; kept in the Git repo, stripped from the Fab package
     "CLAUDE.md",             # Claude AI context (development only)
     "DEAD_HANDLERS_DELETED.md",
     "HANDLER_AUDIT.md", 
@@ -90,21 +92,11 @@ $ExcludeDevFiles = @(
     "FAB-DESCRIPTION.md",    # Development file not needed by end users
     "FAB_Tech_Details.md",   # FAB submission details not needed by end users
     "FAB-Checklist.md",      # Internal checklist not needed by end users
-    ".gitignore",            # Git-specific file not needed by end users
-    # --- VibeUE MCP proxy: external/standalone tooling, NOT needed by the in-editor
-    #     plugin and rejected by Epic/FAB review (standalone server + process-spawning .bat) ---
-    "vibeue-proxy.json",     # Local proxy config with bearer token (auto-generated at runtime)
-    "vibeue-proxy.py",       # Standalone HTTP proxy server (opens a port; for use when UE is closed)
-    "start-vibeue-proxy.bat" # Proxy launcher (kills/spawns background process, Windows startup helper)
+    ".gitignore"             # Git-specific file not needed by end users
 )
 
-# Folders that exist only to hold the excluded proxy tooling (avoids shipping an empty dir).
-# Content/Python currently contains ONLY the proxy script + launcher above.
-$ExcludeProxyDirs = @(
-    (Join-Path $SourceDir "Content\Python")
-)
-
-# Note: test_prompts folder is now included for user reference and examples
+# Note: test_prompts folder is now included for user reference and examples.
+# Note: Content/Python ships — init_unreal.py registers VibeUE's skills at editor startup.
 
 Write-Host "Copying plugin files (excluding build artifacts)..." -ForegroundColor Green
 
@@ -114,7 +106,7 @@ $RobocopyArgs = @(
     $PackageDir,
     "/E",                # Copy subdirectories including empty ones
     "/XD"                # Exclude directories
-) + $ExcludeDirectories + $ExcludeProxyDirs + @(
+) + $ExcludeDirectories + @(
     "/XF"                # Exclude files
 ) + $ExcludeFiles + $ExcludeDevFiles
 

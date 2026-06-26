@@ -53,7 +53,7 @@ asset_tools.create_asset("MainMenu", "/Game/UI", unreal.WidgetBlueprint, factory
 ```
 
 Do **not** call `BlueprintEditorLibrary.get_blueprint_class()`, `unreal.create_widget_blueprint()`, or
-`WidgetService.create_widget()` — none exist. (Runnable: `scripts/create_widget.pyx`.)
+`WidgetService.create_widget()` — none exist. (Runnable: `scripts/create_widget.txt`.)
 
 ### 🚨 Hierarchy: set the root first, parents before children
 
@@ -61,6 +61,11 @@ Do **not** call `BlueprintEditorLibrary.get_blueprint_class()`, `unreal.create_w
 unreal.WidgetService.add_component(path, "CanvasPanel", "RootCanvas", "", True)   # root: set_as_root=True
 unreal.WidgetService.add_component(path, "Button", "PlayButton", "RootCanvas", False)
 ```
+
+> ⚠️ **Widget names are unique per-blueprint, NOT per-parent.** UMG enforces one name across the
+> whole Widget Blueprint, so you can't add an `ItemLabel`/`ItemButton` under each of `Item1`,
+> `Item2`, `Item3`. Suffix per-parent (`Item1Label`, `Item2Label`, …) — reusing a name silently
+> lands the component on the wrong parent or no-ops.
 
 ### 🚨 Property values are ALWAYS strings
 
@@ -86,7 +91,7 @@ still shows the old value, your value string didn't match the struct's member la
 Use `set_font` / `set_brush` (with `WidgetFontInfo` / `WidgetBrushInfo`) when changing a complete font
 or brush — they keep related fields together. Use `set_property` only for single leaf values or slot
 aliases like `Position X`, `Size Y`, `Anchor Min X`. See `reference.md` for every field name; runnable
-examples in `scripts/apply_font.pyx` and `scripts/apply_brush.pyx`.
+examples in `scripts/apply_font.txt` and `scripts/apply_brush.txt`.
 
 `set_brush` requires a **`slot_name`**: `set_brush(widget_path, component_name, slot_name, brush_info)`
 (for an Image the slot is `"Brush"`). `set_font` takes an optional `property_name` that defaults to `"Font"`.
@@ -96,11 +101,18 @@ examples in `scripts/apply_font.pyx` and `scripts/apply_brush.pyx`.
 > via `set_font` with a `WidgetFontInfo`. Don't trust the `True/False` return of `set_property` on
 > nested struct sub-fields — read it back to confirm.
 
+> ⚠️ **`get_font` readback quirk (issue #470):** the struct-typed string fields `color`,
+> `shadow_color`, and `shadow_offset` come back as **two concatenated representations** glued
+> together, e.g. `shadow_offset == "(X=0.0,Y=0.0)(X=1.000000,Y=1.000000)"`. The *trailing*
+> parenthesized group is the real value. Scalar fields (`size`, `typeface`, `font_family`,
+> `letter_spacing`, `outline_size`) are clean. When verifying a font round-trip, parse the last
+> `(...)` group of these three fields (or compare scalars only) until #470 is fixed.
+
 ### 🚨 Animations require real property paths
 
 `add_animation_track` / `add_keyframe` target actual widget properties or slot aliases
 (`RenderOpacity`, `ColorAndOpacity`, `Position X/Y`, `Size X/Y`). Always create the animation first,
-then the track, then keyframes. (Runnable: `scripts/create_animation.pyx`.)
+then the track, then keyframes. (Runnable: `scripts/create_animation.txt`.)
 
 ### 🚨 Preview vs PIE — different purposes
 
@@ -202,24 +214,25 @@ Sample scripts under `scripts/` are **runnable examples** — edit the variables
 
 | Task | Workflow | Sample script (run via `execute_python_code`) |
 |------|----------|-----------------------------------------------|
-| Create a Widget Blueprint | `workflows.md` → Create Widget Blueprint | `scripts/create_widget.pyx` |
-| Build a menu (root + panel + buttons) | `workflows.md` → Build a Menu | `scripts/build_menu.pyx` |
+| Create a Widget Blueprint | `workflows.md` → Create Widget Blueprint | `scripts/create_widget.txt` |
+| Build a menu (root + panel + buttons) | `workflows.md` → Build a Menu | `scripts/build_menu.txt` |
 | Position widgets on a CanvasPanel | `workflows.md` → Canvas Positioning | — |
-| Inspect a widget (hierarchy + properties) | `workflows.md` → Inspect a Widget | `scripts/inspect_hierarchy.pyx` |
-| Apply full font styling | `workflows.md` → Font Styling | `scripts/apply_font.pyx` |
-| Apply full brush styling | `workflows.md` → Brush Styling | `scripts/apply_brush.pyx` |
-| Author a widget animation | `workflows.md` → Widget Animation | `scripts/create_animation.pyx` |
+| Inspect a widget (hierarchy + properties) | `workflows.md` → Inspect a Widget | `scripts/inspect_hierarchy.txt` |
+| Apply full font styling | `workflows.md` → Font Styling | `scripts/apply_font.txt` |
+| Apply full brush styling | `workflows.md` → Brush Styling | `scripts/apply_brush.txt` |
+| Author a widget animation | `workflows.md` → Widget Animation | `scripts/create_animation.txt` |
 | Bind a widget event to a function | `workflows.md` → Bind Event | — |
 | Rename / remove a widget | `workflows.md` → Edit the Hierarchy | — |
-| Edit slot layout (z-order, alignment, padding) / reparent | SKILL.md → Slot editing | `scripts/edit_slots.pyx` |
-| Capture a preview PNG | `workflows.md` → Capture Preview | `scripts/capture_preview.pyx` |
-| Inspect a widget live in PIE | `workflows.md` → PIE Runtime Check | `scripts/pie_inspect.pyx` |
-| Add MVVM ViewModel + bindings | `mvvm.md` | `scripts/mvvm_hud.pyx` |
+| Edit slot layout (z-order, alignment, padding) / reparent | SKILL.md → Slot editing | `scripts/edit_slots.txt` |
+| Capture a preview PNG | `workflows.md` → Capture Preview | `scripts/capture_preview.txt` |
+| Inspect a widget live in PIE | `workflows.md` → PIE Runtime Check | `scripts/pie_inspect.txt` |
+| Add MVVM ViewModel + bindings | `mvvm.md` | `scripts/mvvm_hud.txt` |
 
 ## Sub-docs
 
-Load these only when the task needs them (read the file under
-`Plugins/VibeUE/Content/Skills/umg-widgets/`, or `vibeue-skills-manager(action='load', skill_name='umg-widgets/<name>')`):
+Load these only when the task needs them — read the sibling file directly under
+`Plugins/VibeUE/Content/Skills/umg-widgets/` (the engine `AgentSkillToolset` `GetSkills` is the
+loader that exposes this skill; there is no `vibeue-skills-manager` tool):
 
 - **`workflows.md`** — step-by-step task workflows with copy-paste Python for every task above.
 - **`reference.md`** — field-name tables for every return type (`FWidgetInfo`, `FWidgetComponentSnapshot`,

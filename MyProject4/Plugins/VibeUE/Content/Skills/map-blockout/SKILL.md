@@ -6,7 +6,6 @@ vibeue_classes:
   - MapBlockoutService
   - LandscapeService
   - FoliageService
-  - ActorService
 unreal_classes:
   - Landscape
   - LandscapeProxy
@@ -59,7 +58,9 @@ and re-run the stage.
 
 ## Sub-docs available
 
-Load with `vibeue-skills-manager(action="load", skill_name="map-blockout/<section>")`:
+Skills load via the engine's `AgentSkillToolset` (`ListSkills` / `GetSkills`). To pull a
+sub-doc, request `map-blockout/<section>` through `GetSkills`. The sibling `*.md` files also
+sit next to this `SKILL.md` on disk and can be read directly.
 
 | Sub-doc | When to load |
 |---------|--------------|
@@ -86,8 +87,8 @@ to repair.
 2. Pass the result + config to `run_full_pipeline`
 
 `export_landcover_grid` reads every paint layer on the source landscape plus the
-heightmap, returns a normalized grid. No PNG round-trip — this replaces the
-host-Python `export_terrain_data.py` + `build_inputs.py` steps.
+heightmap, returns a normalized grid in one native call — no PNG round-trip and
+no host-Python pre-processing step.
 
 ### Map your paint layers to design categories
 
@@ -183,11 +184,10 @@ S.materialize_railway_and_bridges(result.final_state.stage5_railway, "Landscape1
 
 ## Status
 
-Branch `map-blockout` is the **skeleton PR**: surface complete, every method
-declared and discoverable from Python, implementations stubbed pending the
-contributor's review. The host-Python reference at
-`Source/VibeUE/Tests/MapBlockout/reference/` is the algorithmic spec that the
-C++ implementations port.
+Fully implemented — every stage (Roads, POIs, Fields, Foliage, Railway/Bridges),
+the Final Pass, the renderers, and the materializers are live in C++. The full
+pipeline has been verified end-to-end: all stage gates plus the Final Pass pass,
+producing the eight deliverable PNGs.
 
 ## Related Skills
 

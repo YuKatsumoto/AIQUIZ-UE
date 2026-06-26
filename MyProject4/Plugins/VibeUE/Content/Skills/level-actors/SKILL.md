@@ -13,6 +13,17 @@ unreal_classes:
 
 # Level Actors Skill
 
+> 🔀 **Engine owns the basics now.** In the Unreal 5.8 consolidation, listing / finding / spawning /
+> moving / transforming / selecting actors moved to Unreal's native toolsets — `ActorTools`,
+> `SceneTools`, and `EditorAppToolset` (selection, camera, PIE, screenshots), reachable via
+> `call_tool`. Equivalently you can drive `unreal.EditorActorSubsystem` /
+> `unreal.LevelEditorSubsystem` directly from `execute_python_code` (shown throughout below).
+> **VibeUE's `ActorService` was trimmed to only the delta the engine doesn't provide:** transform
+> lock (`set_actor_lock_location`), absolute-transform flags, preserve-scale-ratio, viewport camera
+> framing (`get_actor_view_camera` / `calculate_actor_view` / `set_viewport_camera`), and full
+> property dumps (`get_all_properties`). `ActorService.add_actor` / `set_property` / `get_property`
+> no longer exist — use the engine toolsets or `EditorActorSubsystem` for spawning and property edits.
+
 ## Critical Rules
 
 ### � Creating a "Basic" Level Requires `new_level_from_template`, NOT `new_level`
@@ -83,9 +94,12 @@ rather than guessing repeatedly — its `doc_string` lists the real editor-prope
 | `get_selected_level_actors()` | `actor_subsys.get_selected_level_actors()` |
 | `set_actor_selection_state()` | `actor_subsys.set_actor_selection_state()` |
 
-### 🚨 NEVER Use `ActorService.add_actor` for Static Mesh Actors
+### 🚨 Spawn Static Mesh Actors via `spawn_actor_from_class` + `comp.set_static_mesh()`
 
-`ActorService.add_actor()` + `set_property("StaticMesh", ...)` creates actors with **zero-extent bounds** — they are completely invisible in the viewport even though `get_property` reports the mesh is set. This is a known limitation.
+Do **not** spawn a bare actor and then poke `StaticMesh` through a generic property setter — that
+historically produced actors with **zero-extent bounds** (invisible in the viewport even though the
+mesh reads back as set). (The old `ActorService.add_actor` / `set_property` helpers that caused this
+were removed in 5.8.)
 
 **ALWAYS use `spawn_actor_from_class` + `comp.set_static_mesh()`:**
 
@@ -348,7 +362,7 @@ arrived = unreal.Vector.distance(actor.get_actor_location(), target) < 1.0
 world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
 hit = unreal.SystemLibrary.line_trace_single(
     world, start_loc, target,
-    unreal.TraceTypeQuery.TRACE_TYPE_QUERY1,   # Visibility channel
+    unreal.TraceTypeQuery.ECC_VISIBILITY,      # Visibility channel (TRACE_TYPE_QUERY1 is the deprecated alias)
     False, [actor],                            # ignore the moving actor itself
     unreal.DrawDebugTrace.NONE, True)
 if hit and hit.to_tuple()[0]:                  # [0] = blocking hit bool
@@ -444,7 +458,10 @@ dup.set_actor_location(unreal.Vector(loc.x + 200, loc.y, loc.z), False, False)
 
 ### Camera View Methods (for screenshots and verification)
 
-Use `ActorService` to position the viewport camera to frame actors from specific directions.
+Use `ActorService` to position the viewport camera to frame actors from specific directions. (For a
+plain "focus on these actors" with no specific direction, the engine **`EditorAppToolset`**
+`FocusOnActors` action via `call_tool` also works — `ActorService` adds the directional/padding
+framing the engine toolset lacks.)
 
 > ⚠️ **NEVER guess camera coordinates with `set_viewport_camera`.** Manual positions almost always point at sky or empty space. Always use `get_actor_view_camera` which auto-calculates position from the actor's bounding box.
 
@@ -546,4 +563,4 @@ print(f"Absolute: loc={loc}, rot={rot}, scale={scale}")
 
 ## Sample scripts (run via `execute_python_code`)
 
-- **`scripts/manipulate_actors.pyx`** — list level actors, find by class, move/rotate by name.
+- **`scripts/manipulate_actors.txt`** — list level actors, find by class, move/rotate by name.

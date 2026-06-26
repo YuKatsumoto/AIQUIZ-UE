@@ -67,6 +67,12 @@
 // For OpenFunctionGraph - Blueprint Editor navigation
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "BlueprintEditor.h"
+#include "Framework/Docking/TabManager.h"   // For FGlobalTabmanager (active-tab anchoring)
+#include "Widgets/Docking/SDockTab.h"        // For SDockTab::GetTabManagerPtr
+#include "Materials/Material.h"              // For UMaterial::MaterialGraph (focused-graph context)
+#include "MaterialGraph/MaterialGraph.h"     // For UMaterialGraph
+#include "IMaterialEditor.h"                 // For IMaterialEditor::GetSelectedNodes
+#include "AssetRegistry/ARFilter.h"          // For FARFilter (resolve original material asset path)
 // For FScopedTransaction (undo support)
 #include "ScopedTransaction.h"
 
@@ -470,9 +476,9 @@ TArray<FBlueprintVariableInfo> UBlueprintService::ListVariables(const FString& B
 	return Variables;
 }
 
-TArray<FVibeUEBlueprintFunctionInfo> UBlueprintService::ListFunctions(const FString& BlueprintPath)
+TArray<FVibeBlueprintFunctionInfo> UBlueprintService::ListFunctions(const FString& BlueprintPath)
 {
-	TArray<FVibeUEBlueprintFunctionInfo> Functions;
+	TArray<FVibeBlueprintFunctionInfo> Functions;
 
 	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
 	if (!Blueprint)
@@ -491,7 +497,7 @@ TArray<FVibeUEBlueprintFunctionInfo> UBlueprintService::ListFunctions(const FStr
 				continue;
 			}
 
-			FVibeUEBlueprintFunctionInfo FuncInfo;
+			FVibeBlueprintFunctionInfo FuncInfo;
 			FuncInfo.FunctionName = Function->GetName();
 			FuncInfo.bIsPure = Function->HasAnyFunctionFlags(FUNC_BlueprintPure);
 
@@ -532,14 +538,14 @@ TArray<FVibeUEBlueprintFunctionInfo> UBlueprintService::ListFunctions(const FStr
 		const FString GraphName = Graph->GetName();
 
 		// Skip if already found in the compiled class
-		const bool bAlreadyFound = Functions.ContainsByPredicate([&GraphName](const FVibeUEBlueprintFunctionInfo& F)
+		const bool bAlreadyFound = Functions.ContainsByPredicate([&GraphName](const FVibeBlueprintFunctionInfo& F)
 		{
 			return F.FunctionName == GraphName;
 		});
 
 		if (!bAlreadyFound)
 		{
-			FVibeUEBlueprintFunctionInfo FuncInfo;
+			FVibeBlueprintFunctionInfo FuncInfo;
 			FuncInfo.FunctionName = GraphName;
 			FuncInfo.bIsPure = false;
 			FuncInfo.bIsOverride = false;
@@ -1806,60 +1812,6 @@ bool UBlueprintService::ReparentComponent(
 // VARIABLE MANAGEMENT (Phase 1)
 // ============================================================================
 
-bool UBlueprintService::AddVariable(
-	const FString& BlueprintPath,
-	const FString& VariableName,
-	const FString& VariableType,
-	const FString& DefaultValue,
-	bool bIsArray,
-	const FString& ContainerType)
-{
-	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
-	if (!Blueprint)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddVariable: Failed to load blueprint: %s"), *BlueprintPath);
-		return false;
-	}
-
-	// Check if variable already exists
-	for (const FBPVariableDescription& Var : Blueprint->NewVariables)
-	{
-		if (Var.VarName.ToString() == VariableName)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("AddVariable: Variable '%s' already exists in %s"), *VariableName, *BlueprintPath);
-			return false;
-		}
-	}
-
-	// Parse the type string
-	FEdGraphPinType PinType;
-	FString ErrorMessage;
-	if (!FBlueprintTypeParser::ParseTypeString(VariableType, PinType, bIsArray, ContainerType, ErrorMessage))
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddVariable: Failed to parse type '%s': %s"), *VariableType, *ErrorMessage);
-		return false;
-	}
-
-	// Create variable description
-	FBPVariableDescription NewVar;
-	NewVar.VarName = FName(*VariableName);
-	NewVar.VarGuid = FGuid::NewGuid();
-	NewVar.VarType = PinType;
-	NewVar.FriendlyName = VariableName;
-	NewVar.Category = FText::FromString(TEXT("Default"));
-	NewVar.DefaultValue = DefaultValue;
-	NewVar.PropertyFlags = CPF_Edit | CPF_BlueprintVisible | CPF_DisableEditOnInstance;
-
-	// Add variable to blueprint
-	Blueprint->NewVariables.Add(NewVar);
-
-	// Mark blueprint as modified and refresh
-	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
-
-	UE_LOG(LogTemp, Log, TEXT("AddVariable: Added variable '%s' of type '%s' to %s"), *VariableName, *VariableType, *BlueprintPath);
-	return true;
-}
-
 bool UBlueprintService::SetVariableDefaultValue(
 	const FString& BlueprintPath,
 	const FString& VariableName,
@@ -1885,32 +1837,6 @@ bool UBlueprintService::SetVariableDefaultValue(
 	}
 
 	UE_LOG(LogTemp, Warning, TEXT("SetVariableDefaultValue: Variable '%s' not found in %s"), *VariableName, *BlueprintPath);
-	return false;
-}
-
-bool UBlueprintService::RemoveVariable(
-	const FString& BlueprintPath,
-	const FString& VariableName)
-{
-	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
-	if (!Blueprint)
-	{
-		UE_LOG(LogTemp, Error, TEXT("RemoveVariable: Failed to load blueprint: %s"), *BlueprintPath);
-		return false;
-	}
-
-	// Find and remove the variable
-	for (int32 i = 0; i < Blueprint->NewVariables.Num(); ++i)
-	{
-		if (Blueprint->NewVariables[i].VarName.ToString() == VariableName)
-		{
-			FBlueprintEditorUtils::RemoveMemberVariable(Blueprint, Blueprint->NewVariables[i].VarName);
-			UE_LOG(LogTemp, Log, TEXT("RemoveVariable: Removed variable '%s' from %s"), *VariableName, *BlueprintPath);
-			return true;
-		}
-	}
-
-	UE_LOG(LogTemp, Warning, TEXT("RemoveVariable: Variable '%s' not found in %s"), *VariableName, *BlueprintPath);
 	return false;
 }
 
@@ -1990,145 +1916,6 @@ bool UBlueprintService::GetVariableInfo(
 
 	UE_LOG(LogTemp, Warning, TEXT("GetVariableInfo: Variable '%s' not found in %s"), *VariableName, *BlueprintPath);
 	return false;
-}
-
-bool UBlueprintService::ModifyVariable(
-	const FString& BlueprintPath,
-	const FString& VariableName,
-	const FString& NewName,
-	const FString& NewCategory,
-	const FString& NewTooltip,
-	const FString& NewDefaultValue,
-	int32 bSetInstanceEditable,
-	int32 bSetExposeOnSpawn,
-	int32 bSetPrivate,
-	int32 bSetBlueprintReadOnly,
-	const FString& NewReplicationCondition)
-{
-	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
-	if (!Blueprint)
-	{
-		UE_LOG(LogTemp, Error, TEXT("ModifyVariable: Failed to load blueprint: %s"), *BlueprintPath);
-		return false;
-	}
-
-	// Find the variable
-	FBPVariableDescription* FoundVar = nullptr;
-	for (FBPVariableDescription& VarDesc : Blueprint->NewVariables)
-	{
-		if (VarDesc.VarName.ToString() == VariableName)
-		{
-			FoundVar = &VarDesc;
-			break;
-		}
-	}
-
-	if (!FoundVar)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("ModifyVariable: Variable '%s' not found in %s"), *VariableName, *BlueprintPath);
-		return false;
-	}
-
-	bool bModified = false;
-
-	// Rename if specified
-	if (!NewName.IsEmpty() && NewName != VariableName)
-	{
-		FBlueprintEditorUtils::RenameMemberVariable(Blueprint, FoundVar->VarName, FName(*NewName));
-		bModified = true;
-	}
-
-	// Update category
-	if (!NewCategory.IsEmpty())
-	{
-		FoundVar->Category = FText::FromString(NewCategory);
-		bModified = true;
-	}
-
-	// Update tooltip (stored as metadata)
-	if (!NewTooltip.IsEmpty())
-	{
-		FoundVar->SetMetaData(TEXT("tooltip"), NewTooltip);
-		bModified = true;
-	}
-
-	// Update default value
-	if (!NewDefaultValue.IsEmpty())
-	{
-		FoundVar->DefaultValue = NewDefaultValue;
-		bModified = true;
-	}
-
-	// Update property flags
-	if (bSetInstanceEditable >= 0)
-	{
-		if (bSetInstanceEditable > 0)
-		{
-			FoundVar->PropertyFlags &= ~CPF_DisableEditOnInstance;
-		}
-		else
-		{
-			FoundVar->PropertyFlags |= CPF_DisableEditOnInstance;
-		}
-		bModified = true;
-	}
-
-	if (bSetExposeOnSpawn >= 0)
-	{
-		if (bSetExposeOnSpawn > 0)
-		{
-			FoundVar->PropertyFlags |= CPF_ExposeOnSpawn;
-		}
-		else
-		{
-			FoundVar->PropertyFlags &= ~CPF_ExposeOnSpawn;
-		}
-		bModified = true;
-	}
-
-	if (bSetBlueprintReadOnly >= 0)
-	{
-		if (bSetBlueprintReadOnly > 0)
-		{
-			FoundVar->PropertyFlags |= CPF_BlueprintReadOnly;
-		}
-		else
-		{
-			FoundVar->PropertyFlags &= ~CPF_BlueprintReadOnly;
-		}
-		bModified = true;
-	}
-
-	// Update replication
-	if (!NewReplicationCondition.IsEmpty())
-	{
-		if (NewReplicationCondition.Equals(TEXT("Replicated"), ESearchCase::IgnoreCase))
-		{
-			FoundVar->PropertyFlags |= CPF_Net;
-			FoundVar->RepNotifyFunc = NAME_None;
-		}
-		else if (NewReplicationCondition.Equals(TEXT("RepNotify"), ESearchCase::IgnoreCase))
-		{
-			FoundVar->PropertyFlags |= CPF_Net;
-			// Create OnRep function name
-			FString OnRepName = FString::Printf(TEXT("OnRep_%s"), *FoundVar->VarName.ToString());
-			FoundVar->RepNotifyFunc = FName(*OnRepName);
-		}
-		else if (NewReplicationCondition.Equals(TEXT("None"), ESearchCase::IgnoreCase))
-		{
-			FoundVar->PropertyFlags &= ~CPF_Net;
-			FoundVar->RepNotifyFunc = NAME_None;
-		}
-		bModified = true;
-	}
-
-	if (bModified)
-	{
-		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
-		UE_LOG(LogTemp, Log, TEXT("ModifyVariable: Modified variable '%s' in %s"), *VariableName, *BlueprintPath);
-	}
-
-	return true;
 }
 
 TArray<FVariableTypeInfo> UBlueprintService::SearchVariableTypes(
@@ -2511,63 +2298,6 @@ FString UBlueprintService::AddCallDelegateNode(
 // FUNCTION MANAGEMENT (Phase 2)
 // ============================================================================
 
-bool UBlueprintService::CreateFunction(
-	const FString& BlueprintPath,
-	const FString& FunctionName,
-	bool bIsPure)
-{
-	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
-	if (!Blueprint)
-	{
-		UE_LOG(LogTemp, Error, TEXT("CreateFunction: Failed to load blueprint: %s"), *BlueprintPath);
-		return false;
-	}
-
-	// Check if function already exists
-	TArray<UEdGraph*> Graphs;
-	Blueprint->GetAllGraphs(Graphs);
-	for (UEdGraph* Graph : Graphs)
-	{
-		if (Graph && Graph->GetName() == FunctionName)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("CreateFunction: Function '%s' already exists in %s"), *FunctionName, *BlueprintPath);
-			return true;  // Idempotent - not an error
-		}
-	}
-
-	// Create new function graph
-	UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(
-		Blueprint,
-		FName(*FunctionName),
-		UEdGraph::StaticClass(),
-		UEdGraphSchema_K2::StaticClass()
-	);
-
-	if (!NewGraph)
-	{
-		UE_LOG(LogTemp, Error, TEXT("CreateFunction: Failed to create graph for '%s'"), *FunctionName);
-		return false;
-	}
-
-	// Set up the function graph
-	FBlueprintEditorUtils::AddFunctionGraph<UClass>(Blueprint, NewGraph, /*bIsUserCreated=*/true, /*SignatureFromClass=*/nullptr);
-
-	// Find the function entry node and set pure flag
-	if (bIsPure)
-	{
-		TArray<UK2Node_FunctionEntry*> EntryNodes;
-		NewGraph->GetNodesOfClass(EntryNodes);
-		if (EntryNodes.Num() > 0 && EntryNodes[0])
-		{
-			EntryNodes[0]->AddExtraFlags(FUNC_BlueprintPure);
-		}
-	}
-
-	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
-	UE_LOG(LogTemp, Log, TEXT("CreateFunction: Created function '%s' in %s"), *FunctionName, *BlueprintPath);
-	return true;
-}
-
 bool UBlueprintService::CreateMacroGraph(const FString& BlueprintPath, const FString& MacroName)
 {
 	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
@@ -2855,40 +2585,6 @@ TArray<FBlueprintFunctionParameterInfo> UBlueprintService::GetFunctionParameters
 	return Parameters;
 }
 
-bool UBlueprintService::DeleteFunction(
-	const FString& BlueprintPath,
-	const FString& FunctionName)
-{
-	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
-	if (!Blueprint)
-	{
-		UE_LOG(LogTemp, Error, TEXT("DeleteFunction: Failed to load blueprint: %s"), *BlueprintPath);
-		return false;
-	}
-
-	// Find the function graph
-	UEdGraph* FunctionGraph = nullptr;
-	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
-	{
-		if (Graph && Graph->GetName().Equals(FunctionName, ESearchCase::IgnoreCase))
-		{
-			FunctionGraph = Graph;
-			break;
-		}
-	}
-
-	if (!FunctionGraph)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("DeleteFunction: Function '%s' not found in %s"), *FunctionName, *BlueprintPath);
-		return false;
-	}
-
-	// Remove the function graph
-	FBlueprintEditorUtils::RemoveGraph(Blueprint, FunctionGraph, EGraphRemoveFlags::Recompile);
-	UE_LOG(LogTemp, Log, TEXT("DeleteFunction: Deleted function '%s' from %s"), *FunctionName, *BlueprintPath);
-	return true;
-}
-
 bool UBlueprintService::GetFunctionInfo(
 	const FString& BlueprintPath,
 	const FString& FunctionName,
@@ -3002,24 +2698,6 @@ bool UBlueprintService::GetFunctionInfo(
 
 	UE_LOG(LogTemp, Log, TEXT("GetFunctionInfo: Got info for function '%s' in %s"), *FunctionName, *BlueprintPath);
 	return true;
-}
-
-bool UBlueprintService::AddFunctionInput(
-	const FString& BlueprintPath,
-	const FString& FunctionName,
-	const FString& ParameterName,
-	const FString& ParameterType)
-{
-	return AddFunctionParameter(BlueprintPath, FunctionName, ParameterName, ParameterType, /*bIsOutput=*/false);
-}
-
-bool UBlueprintService::AddFunctionOutput(
-	const FString& BlueprintPath,
-	const FString& FunctionName,
-	const FString& ParameterName,
-	const FString& ParameterType)
-{
-	return AddFunctionParameter(BlueprintPath, FunctionName, ParameterName, ParameterType, /*bIsOutput=*/true);
 }
 
 bool UBlueprintService::RemoveFunctionParameter(
@@ -3399,526 +3077,6 @@ UEdGraphNode* UBlueprintService::FindNodeById(UEdGraph* Graph, const FString& No
 	}
 
 	return nullptr;
-}
-
-FString UBlueprintService::AddGetVariableNode(
-	const FString& BlueprintPath,
-	const FString& GraphName,
-	const FString& VariableName,
-	float PosX,
-	float PosY)
-{
-	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
-	if (!Blueprint)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddGetVariableNode: Failed to load blueprint: %s"), *BlueprintPath);
-		return FString();
-	}
-
-	// Special handling for Animation Blueprints and EventGraph
-	UEdGraph* Graph = nullptr;
-	UAnimBlueprint* AnimBP = Cast<UAnimBlueprint>(Blueprint);
-	if (AnimBP && GraphName.Equals(TEXT("EventGraph"), ESearchCase::IgnoreCase))
-	{
-		// AnimBPs may store EventGraph in UbergraphPages
-		for (UEdGraph* UberGraph : Blueprint->UbergraphPages)
-		{
-			if (UberGraph && UberGraph->GetFName() == UEdGraphSchema_K2::GN_EventGraph)
-			{
-				Graph = UberGraph;
-				break;
-			}
-		}
-	}
-	
-	if (!Graph)
-	{
-		Graph = FindGraph(Blueprint, GraphName);
-	}
-
-	if (!Graph)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddGetVariableNode: Graph '%s' not found in %s"), *GraphName, *BlueprintPath);
-		return FString();
-	}
-
-	// Validate variable exists — check compiled GeneratedClass first, fall back to NewVariables
-	// (uncompiled BPs won't have the property in GeneratedClass yet)
-	bool bVariableFound = false;
-	if (Blueprint->GeneratedClass && FindFProperty<FProperty>(Blueprint->GeneratedClass, FName(*VariableName)))
-	{
-		bVariableFound = true;
-	}
-	if (!bVariableFound)
-	{
-		for (const FBPVariableDescription& VarDesc : Blueprint->NewVariables)
-		{
-			if (VarDesc.VarName == FName(*VariableName))
-			{
-				bVariableFound = true;
-				break;
-			}
-		}
-	}
-	if (!bVariableFound)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddGetVariableNode: Variable '%s' not found in %s"), *VariableName, *BlueprintPath);
-		return FString();
-	}
-
-	// Create the get variable node
-	UK2Node_VariableGet* GetNode = NewObject<UK2Node_VariableGet>(Graph);
-	GetNode->VariableReference.SetSelfMember(FName(*VariableName));
-
-	// Add to graph
-	Graph->AddNode(GetNode, false, false);
-	GetNode->CreateNewGuid();
-	GetNode->PostPlacedNewNode();
-	GetNode->AllocateDefaultPins();
-
-	// Pin allocation fails silently when the variable property can't be resolved on the
-	// skeleton class (e.g. stale skeleton after recent variable/function edits). Returning a
-	// GUID for a pin-less node leaves a corrupt node every downstream connect call fails on.
-	if (GetNode->Pins.Num() == 0)
-	{
-		GetNode->ReconstructNode();
-	}
-	if (GetNode->Pins.Num() == 0)
-	{
-		Graph->RemoveNode(GetNode);
-		UE_LOG(LogTemp, Error, TEXT("AddGetVariableNode: Node for '%s' allocated zero pins (variable not resolvable on skeleton class) — node removed. Compile the blueprint and retry."), *VariableName);
-		return FString();
-	}
-
-	// Set position
-	GetNode->NodePosX = PosX;
-	GetNode->NodePosY = PosY;
-
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
-	UE_LOG(LogTemp, Log, TEXT("AddGetVariableNode: Added get node for '%s' in %s"), *VariableName, *GraphName);
-
-	return GetNode->NodeGuid.ToString();
-}
-
-FString UBlueprintService::AddMemberGetNode(
-	const FString& BlueprintPath,
-	const FString& GraphName,
-	const FString& TargetClass,
-	const FString& MemberName,
-	float PosX,
-	float PosY)
-{
-	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
-	if (!Blueprint)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddMemberGetNode: Failed to load blueprint: %s"), *BlueprintPath);
-		return FString();
-	}
-
-	UEdGraph* Graph = nullptr;
-	UAnimBlueprint* AnimBP = Cast<UAnimBlueprint>(Blueprint);
-	if (AnimBP && GraphName.Equals(TEXT("EventGraph"), ESearchCase::IgnoreCase))
-	{
-		for (UEdGraph* UberGraph : Blueprint->UbergraphPages)
-		{
-			if (UberGraph && UberGraph->GetFName() == UEdGraphSchema_K2::GN_EventGraph)
-			{
-				Graph = UberGraph;
-				break;
-			}
-		}
-	}
-	if (!Graph)
-	{
-		Graph = FindGraph(Blueprint, GraphName);
-	}
-	if (!Graph)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddMemberGetNode: Graph '%s' not found in %s"), *GraphName, *BlueprintPath);
-		return FString();
-	}
-
-	// Resolve the target class — TObjectIterator search (finds engine, plugin, and project classes)
-	UClass* OwnerClass = nullptr;
-	for (TObjectIterator<UClass> It; It; ++It)
-	{
-		if (It->GetName() == TargetClass)
-		{
-			OwnerClass = *It;
-			break;
-		}
-	}
-
-	if (!OwnerClass)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddMemberGetNode: Class '%s' not found"), *TargetClass);
-		return FString();
-	}
-
-	// Verify the member exists on the class
-	FProperty* MemberProp = FindFProperty<FProperty>(OwnerClass, FName(*MemberName));
-	if (!MemberProp)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddMemberGetNode: Member '%s' not found on class '%s'"), *MemberName, *TargetClass);
-		return FString();
-	}
-
-	// Create the variable get node with an external member reference
-	UK2Node_VariableGet* GetNode = NewObject<UK2Node_VariableGet>(Graph);
-	GetNode->VariableReference.SetExternalMember(FName(*MemberName), OwnerClass);
-
-	Graph->AddNode(GetNode, false, false);
-	GetNode->CreateNewGuid();
-	GetNode->PostPlacedNewNode();
-	GetNode->AllocateDefaultPins();
-
-	GetNode->NodePosX = PosX;
-	GetNode->NodePosY = PosY;
-
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
-	UE_LOG(LogTemp, Log, TEXT("AddMemberGetNode: Added member get for '%s::%s' in %s"), *TargetClass, *MemberName, *GraphName);
-
-	return GetNode->NodeGuid.ToString();
-}
-
-FString UBlueprintService::AddValidatedGetNode(
-	const FString& BlueprintPath,
-	const FString& GraphName,
-	const FString& VariableName,
-	float PosX,
-	float PosY)
-{
-	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
-	if (!Blueprint)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddValidatedGetNode: Failed to load blueprint: %s"), *BlueprintPath);
-		return FString();
-	}
-
-	// Special handling for Animation Blueprints and EventGraph
-	UEdGraph* Graph = nullptr;
-	UAnimBlueprint* AnimBP = Cast<UAnimBlueprint>(Blueprint);
-	if (AnimBP && GraphName.Equals(TEXT("EventGraph"), ESearchCase::IgnoreCase))
-	{
-		for (UEdGraph* UberGraph : Blueprint->UbergraphPages)
-		{
-			if (UberGraph && UberGraph->GetFName() == UEdGraphSchema_K2::GN_EventGraph)
-			{
-				Graph = UberGraph;
-				break;
-			}
-		}
-	}
-
-	if (!Graph)
-	{
-		Graph = FindGraph(Blueprint, GraphName);
-	}
-
-	if (!Graph)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddValidatedGetNode: Graph '%s' not found in %s"), *GraphName, *BlueprintPath);
-		return FString();
-	}
-
-	// Find the variable property
-	FProperty* Property = FindFProperty<FProperty>(Blueprint->GeneratedClass, FName(*VariableName));
-	if (!Property)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddValidatedGetNode: Variable '%s' not found in %s"), *VariableName, *BlueprintPath);
-		return FString();
-	}
-
-	// Create the get variable node
-	UK2Node_VariableGet* GetNode = NewObject<UK2Node_VariableGet>(Graph);
-	GetNode->VariableReference.SetSelfMember(FName(*VariableName));
-
-	// Set to non-pure (impure) variation before AllocateDefaultPins so the node
-	// gets execution pins. AllocateDefaultPins -> CreateImpurePins will auto-
-	// select ValidatedObject for object references (or Branch for primitives).
-	if (FEnumProperty* VariationProp = FindFProperty<FEnumProperty>(UK2Node_VariableGet::StaticClass(), TEXT("CurrentVariation")))
-	{
-		FNumericProperty* UnderlyingProp = VariationProp->GetUnderlyingProperty();
-		void* PropContainer = VariationProp->ContainerPtrToValuePtr<void>(GetNode);
-		UnderlyingProp->SetIntPropertyValue(PropContainer, (int64)EGetNodeVariation::ValidatedObject);
-	}
-
-	// Add to graph
-	Graph->AddNode(GetNode, false, false);
-	GetNode->CreateNewGuid();
-	GetNode->PostPlacedNewNode();
-	GetNode->AllocateDefaultPins();
-
-	// Set position
-	GetNode->NodePosX = PosX;
-	GetNode->NodePosY = PosY;
-
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
-	UE_LOG(LogTemp, Log, TEXT("AddValidatedGetNode: Added validated get for '%s' in %s"), *VariableName, *GraphName);
-
-	return GetNode->NodeGuid.ToString();
-}
-
-FString UBlueprintService::AddSetVariableNode(
-	const FString& BlueprintPath,
-	const FString& GraphName,
-	const FString& VariableName,
-	float PosX,
-	float PosY)
-{
-	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
-	if (!Blueprint)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddSetVariableNode: Failed to load blueprint: %s"), *BlueprintPath);
-		return FString();
-	}
-
-	// Special handling for Animation Blueprints and EventGraph
-	UEdGraph* Graph = nullptr;
-	UAnimBlueprint* AnimBP = Cast<UAnimBlueprint>(Blueprint);
-	if (AnimBP && GraphName.Equals(TEXT("EventGraph"), ESearchCase::IgnoreCase))
-	{
-		// AnimBPs may store EventGraph in UbergraphPages
-		for (UEdGraph* UberGraph : Blueprint->UbergraphPages)
-		{
-			if (UberGraph && UberGraph->GetFName() == UEdGraphSchema_K2::GN_EventGraph)
-			{
-				Graph = UberGraph;
-				break;
-			}
-		}
-	}
-	
-	if (!Graph)
-	{
-		Graph = FindGraph(Blueprint, GraphName);
-	}
-
-	if (!Graph)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddSetVariableNode: Graph '%s' not found in %s"), *GraphName, *BlueprintPath);
-		return FString();
-	}
-
-	// Validate variable exists — check compiled GeneratedClass first, fall back to NewVariables
-	// (uncompiled BPs won't have the property in GeneratedClass yet)
-	bool bVariableFound = false;
-	if (Blueprint->GeneratedClass && FindFProperty<FProperty>(Blueprint->GeneratedClass, FName(*VariableName)))
-	{
-		bVariableFound = true;
-	}
-	if (!bVariableFound)
-	{
-		for (const FBPVariableDescription& VarDesc : Blueprint->NewVariables)
-		{
-			if (VarDesc.VarName == FName(*VariableName))
-			{
-				bVariableFound = true;
-				break;
-			}
-		}
-	}
-	if (!bVariableFound)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddSetVariableNode: Variable '%s' not found in %s"), *VariableName, *BlueprintPath);
-		return FString();
-	}
-
-	// Create the set variable node
-	UK2Node_VariableSet* SetNode = NewObject<UK2Node_VariableSet>(Graph);
-	SetNode->VariableReference.SetSelfMember(FName(*VariableName));
-
-	// Add to graph
-	Graph->AddNode(SetNode, false, false);
-	SetNode->CreateNewGuid();
-	SetNode->PostPlacedNewNode();
-	SetNode->AllocateDefaultPins();
-
-	// Set nodes always allocate exec pins, so the failure signature for an unresolvable
-	// variable property is a missing variable input pin rather than zero pins.
-	if (!SetNode->FindPin(FName(*VariableName)))
-	{
-		SetNode->ReconstructNode();
-	}
-	if (!SetNode->FindPin(FName(*VariableName)))
-	{
-		Graph->RemoveNode(SetNode);
-		UE_LOG(LogTemp, Error, TEXT("AddSetVariableNode: Node for '%s' has no variable pin (variable not resolvable on skeleton class) — node removed. Compile the blueprint and retry."), *VariableName);
-		return FString();
-	}
-
-	// Set position
-	SetNode->NodePosX = PosX;
-	SetNode->NodePosY = PosY;
-
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
-	UE_LOG(LogTemp, Log, TEXT("AddSetVariableNode: Added set node for '%s' in %s"), *VariableName, *GraphName);
-
-	return SetNode->NodeGuid.ToString();
-}
-
-FString UBlueprintService::AddBranchNode(
-	const FString& BlueprintPath,
-	const FString& GraphName,
-	float PosX,
-	float PosY)
-{
-	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
-	if (!Blueprint)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddBranchNode: Failed to load blueprint: %s"), *BlueprintPath);
-		return FString();
-	}
-
-	UEdGraph* Graph = FindGraph(Blueprint, GraphName);
-	if (!Graph)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddBranchNode: Graph '%s' not found in %s"), *GraphName, *BlueprintPath);
-		return FString();
-	}
-
-	// Create the branch node
-	UK2Node_IfThenElse* BranchNode = NewObject<UK2Node_IfThenElse>(Graph);
-
-	// Add to graph
-	Graph->AddNode(BranchNode, false, false);
-	BranchNode->CreateNewGuid();
-	BranchNode->PostPlacedNewNode();
-	BranchNode->AllocateDefaultPins();
-
-	// Set position
-	BranchNode->NodePosX = PosX;
-	BranchNode->NodePosY = PosY;
-
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
-	UE_LOG(LogTemp, Log, TEXT("AddBranchNode: Added branch node to %s"), *GraphName);
-
-	return BranchNode->NodeGuid.ToString();
-}
-
-FString UBlueprintService::AddCastNode(
-	const FString& BlueprintPath,
-	const FString& GraphName,
-	const FString& TargetClass,
-	float PosX,
-	float PosY)
-{
-	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
-	if (!Blueprint)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddCastNode: Failed to load blueprint: %s"), *BlueprintPath);
-		return FString();
-	}
-
-	UEdGraph* Graph = FindGraph(Blueprint, GraphName);
-	if (!Graph)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddCastNode: Graph '%s' not found in %s"), *GraphName, *BlueprintPath);
-		return FString();
-	}
-
-	// Find the target class
-	UClass* TargetUClass = FindFirstObject<UClass>(*TargetClass, EFindFirstObjectOptions::None, ELogVerbosity::Warning, TEXT("AddCastNode"));
-	if (!TargetUClass)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddCastNode: Class '%s' not found"), *TargetClass);
-		return FString();
-	}
-
-	// Create the cast node
-	UK2Node_DynamicCast* CastNode = NewObject<UK2Node_DynamicCast>(Graph);
-	CastNode->TargetType = TargetUClass;
-
-	// Add to graph
-	Graph->AddNode(CastNode, false, false);
-	CastNode->CreateNewGuid();
-	CastNode->PostPlacedNewNode();
-	CastNode->AllocateDefaultPins();
-
-	// Set position
-	CastNode->NodePosX = PosX;
-	CastNode->NodePosY = PosY;
-
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
-	UE_LOG(LogTemp, Log, TEXT("AddCastNode: Added cast to '%s' in %s"), *TargetClass, *GraphName);
-
-	return CastNode->NodeGuid.ToString();
-}
-
-FString UBlueprintService::AddEventNode(
-	const FString& BlueprintPath,
-	const FString& GraphName,
-	const FString& EventName,
-	float PosX,
-	float PosY)
-{
-	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
-	if (!Blueprint)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddEventNode: Failed to load blueprint: %s"), *BlueprintPath);
-		return FString();
-	}
-
-	// For AnimBlueprints, check UbergraphPages for EventGraph first
-	UEdGraph* Graph = nullptr;
-	UAnimBlueprint* AnimBP = Cast<UAnimBlueprint>(Blueprint);
-	if (AnimBP && GraphName.Equals(TEXT("EventGraph"), ESearchCase::IgnoreCase))
-	{
-		for (UEdGraph* UberGraph : Blueprint->UbergraphPages)
-		{
-			if (UberGraph && UberGraph->GetFName() == UEdGraphSchema_K2::GN_EventGraph)
-			{
-				Graph = UberGraph;
-				break;
-			}
-		}
-	}
-	
-	if (!Graph)
-	{
-		Graph = FindGraph(Blueprint, GraphName);
-	}
-
-	if (!Graph)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddEventNode: Graph '%s' not found in %s"), *GraphName, *BlueprintPath);
-		return FString();
-	}
-
-	// Try to find the event function
-	UFunction* EventFunction = nullptr;
-	
-	// Check parent class for the event function
-	if (Blueprint->ParentClass)
-	{
-		EventFunction = Blueprint->ParentClass->FindFunctionByName(FName(*EventName));
-	}
-
-	if (!EventFunction)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddEventNode: Event function '%s' not found in parent class"), *EventName);
-		return FString();
-	}
-
-	// Create the event node
-	UK2Node_Event* EventNode = NewObject<UK2Node_Event>(Graph);
-	EventNode->EventReference.SetExternalMember(FName(*EventName), Blueprint->ParentClass);
-	EventNode->bOverrideFunction = true;
-
-	// Add to graph
-	Graph->AddNode(EventNode, false, false);
-	EventNode->CreateNewGuid();
-	EventNode->PostPlacedNewNode();
-	EventNode->AllocateDefaultPins();
-
-	// Set position
-	EventNode->NodePosX = PosX;
-	EventNode->NodePosY = PosY;
-
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
-	UE_LOG(LogTemp, Log, TEXT("AddEventNode: Added event '%s' in %s"), *EventName, *GraphName);
-
-	return EventNode->NodeGuid.ToString();
 }
 
 FString UBlueprintService::AddCustomEventNode(
@@ -5011,118 +4169,6 @@ FString UBlueprintService::AddCreateEventNode(
 	return CreateDelegateNode->NodeGuid.ToString();
 }
 
-FString UBlueprintService::AddInputActionNode(
-	const FString& BlueprintPath,
-	const FString& GraphName,
-	const FString& InputActionPath,
-	float PosX,
-	float PosY)
-{
-	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
-	if (!Blueprint)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddInputActionNode: Failed to load blueprint: %s"), *BlueprintPath);
-		return FString();
-	}
-
-	// Find the graph
-	UEdGraph* Graph = nullptr;
-	if (GraphName.Equals(TEXT("EventGraph"), ESearchCase::IgnoreCase))
-	{
-		for (UEdGraph* UberGraph : Blueprint->UbergraphPages)
-		{
-			if (UberGraph && UberGraph->GetFName() == UEdGraphSchema_K2::GN_EventGraph)
-			{
-				Graph = UberGraph;
-				break;
-			}
-		}
-	}
-	
-	if (!Graph)
-	{
-		Graph = FindGraph(Blueprint, GraphName);
-	}
-
-	if (!Graph)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddInputActionNode: Graph '%s' not found in %s"), *GraphName, *BlueprintPath);
-		return FString();
-	}
-
-	// Load the Input Action asset
-	UInputAction* InputAction = Cast<UInputAction>(UEditorAssetLibrary::LoadAsset(InputActionPath));
-	if (!InputAction)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddInputActionNode: Failed to load Input Action asset: %s"), *InputActionPath);
-		return FString();
-	}
-
-	// Create the Enhanced Input Action node
-	UK2Node_EnhancedInputAction* InputActionNode = NewObject<UK2Node_EnhancedInputAction>(Graph);
-	InputActionNode->InputAction = InputAction;
-
-	// Add to graph
-	Graph->AddNode(InputActionNode, false, false);
-	InputActionNode->CreateNewGuid();
-	InputActionNode->PostPlacedNewNode();
-	InputActionNode->AllocateDefaultPins();
-
-	// Set position
-	InputActionNode->NodePosX = PosX;
-	InputActionNode->NodePosY = PosY;
-
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
-	UE_LOG(LogTemp, Log, TEXT("AddInputActionNode: Added Enhanced Input Action '%s' in %s"), *InputAction->GetName(), *GraphName);
-
-	return InputActionNode->NodeGuid.ToString();
-}
-
-FString UBlueprintService::AddPrintStringNode(
-	const FString& BlueprintPath,
-	const FString& GraphName,
-	float PosX,
-	float PosY)
-{
-	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
-	if (!Blueprint)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddPrintStringNode: Failed to load blueprint: %s"), *BlueprintPath);
-		return FString();
-	}
-
-	UEdGraph* Graph = FindGraph(Blueprint, GraphName);
-	if (!Graph)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddPrintStringNode: Graph '%s' not found in %s"), *GraphName, *BlueprintPath);
-		return FString();
-	}
-
-	// Create the print string node
-	UK2Node_CallFunction* PrintNode = NewObject<UK2Node_CallFunction>(Graph);
-
-	// Set the function to call
-	UFunction* PrintStringFunc = UKismetSystemLibrary::StaticClass()->FindFunctionByName(GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, PrintString));
-	if (PrintStringFunc)
-	{
-		PrintNode->SetFromFunction(PrintStringFunc);
-	}
-
-	// Add to graph
-	Graph->AddNode(PrintNode, false, false);
-	PrintNode->CreateNewGuid();
-	PrintNode->PostPlacedNewNode();
-	PrintNode->AllocateDefaultPins();
-
-	// Set position
-	PrintNode->NodePosX = PosX;
-	PrintNode->NodePosY = PosY;
-
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
-	UE_LOG(LogTemp, Log, TEXT("AddPrintStringNode: Added print string node to %s"), *GraphName);
-
-	return PrintNode->NodeGuid.ToString();
-}
 
 namespace
 {
@@ -5626,202 +4672,223 @@ TArray<FBlueprintNodeInfo> UBlueprintService::GetSelectedNodes(const FString& Bl
 	return NodeInfos;
 }
 
-FBlueprintCompileResult UBlueprintService::CompileBlueprint(const FString& BlueprintPath)
+
+FBlueprintFocusContext UBlueprintService::GetFocusedGraphContext()
 {
-	FBlueprintCompileResult Result;
+	FBlueprintFocusContext Context;
 
-	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
-	if (!Blueprint)
+	UAssetEditorSubsystem* AssetEditorSubsystem = GEditor ? GEditor->GetEditorSubsystem<UAssetEditorSubsystem>() : nullptr;
+	if (!AssetEditorSubsystem)
 	{
-		UE_LOG(LogTemp, Error, TEXT("CompileBlueprint: Failed to load blueprint: %s"), *BlueprintPath);
-		Result.Errors.Add(FString::Printf(TEXT("Failed to load blueprint: %s"), *BlueprintPath));
-		Result.NumErrors = 1;
-		return Result;
+		UE_LOG(LogTemp, Warning, TEXT("GetFocusedGraphContext: AssetEditorSubsystem not available"));
+		return Context;
 	}
 
-	FCompilerResultsLog CompileResults;
-	CompileResults.bSilentMode = false;
-	CompileResults.bLogInfoOnly = false;
-	FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::None, &CompileResults);
-
-	Result.bSuccess = (Blueprint->Status != BS_Error);
-	Result.NumErrors = CompileResults.NumErrors;
-	Result.NumWarnings = CompileResults.NumWarnings;
-
-	for (const TSharedRef<FTokenizedMessage>& Msg : CompileResults.Messages)
+	// Anchor on the globally-active dock tab so we report the editor the user is
+	// actually looking at. Epic's FAIAssistantDockContext walks up from the AI
+	// assistant's own docked widget; VibeUE is an external MCP agent with no
+	// widget of its own, so the active tab is our closest equivalent signal.
+	TSharedPtr<FTabManager> ActiveTabManager;
+	if (TSharedPtr<SDockTab> ActiveTab = FGlobalTabmanager::Get()->GetActiveTab())
 	{
-		FString MsgText = Msg->ToText().ToString();
-		if (Msg->GetSeverity() == EMessageSeverity::Error)
+		ActiveTabManager = ActiveTab->GetTabManagerPtr();
+	}
+
+	// Resolve and fill the context from one open asset editor. Handles both the
+	// Blueprint family (FBlueprintEditor::GetFocusedGraph) and the Material editor
+	// (IMaterialEditor + UMaterial::MaterialGraph), mirroring the two branches of
+	// Epic's UAIAssistantToolset::GetDockedContext(). The editor-name guards avoid
+	// an unsafe static_cast onto unrelated editor types. Returns false if the asset
+	// isn't a supported graph editor or has no focused/built graph.
+	auto TryFill = [&Context](UObject* Asset, IAssetEditorInstance* EditorInstance) -> bool
+	{
+		if (!Asset || !EditorInstance)
 		{
-			Result.Errors.Add(MsgText);
+			return false;
 		}
-		else if (Msg->GetSeverity() == EMessageSeverity::Warning || Msg->GetSeverity() == EMessageSeverity::PerformanceWarning)
+
+		const FName EditorName = EditorInstance->GetEditorName();
+
+		// --- Blueprint family (Blueprint / Widget / AnimBlueprint editors) ---
+		if (UBlueprint* Blueprint = Cast<UBlueprint>(Asset))
 		{
-			// Agents repeatedly dismiss this warning as cosmetic; spell out the consequence
-			// inline because a function whose Return Node is never reached returns defaults.
-			if (MsgText.Contains(TEXT("Exec pin has no connections")))
+			if (EditorName != FName(TEXT("BlueprintEditor"))
+				&& EditorName != FName(TEXT("WidgetBlueprintEditor"))
+				&& EditorName != FName(TEXT("AnimationBlueprintEditor")))
 			{
-				MsgText += TEXT(" [MUST FIX: the execution chain never reaches this Return Node, so the function's outputs are NEVER set — wire Entry.then -> ... -> Result.execute before claiming success]");
+				return false;
 			}
-			Result.Warnings.Add(MsgText);
+
+			FBlueprintEditor* BlueprintEditor = static_cast<FBlueprintEditor*>(EditorInstance);
+			UEdGraph* FocusedGraph = BlueprintEditor->GetFocusedGraph();
+			if (!FocusedGraph)
+			{
+				return false;
+			}
+
+			Context.bFound = true;
+			Context.AssetPath = Blueprint->GetPathName();
+			Context.AssetName = Blueprint->GetName();
+			Context.EditorType = EditorName.ToString();
+			Context.GraphName = FocusedGraph->GetName();
+			Context.GraphNodeCount = FocusedGraph->Nodes.Num();
+
+			if (Blueprint->UbergraphPages.Contains(FocusedGraph))
+			{
+				Context.GraphKind = TEXT("Ubergraph");
+			}
+			else if (Blueprint->FunctionGraphs.Contains(FocusedGraph))
+			{
+				Context.GraphKind = TEXT("Function");
+			}
+			else if (Blueprint->MacroGraphs.Contains(FocusedGraph))
+			{
+				Context.GraphKind = TEXT("Macro");
+			}
+			else if (Blueprint->DelegateSignatureGraphs.Contains(FocusedGraph))
+			{
+				Context.GraphKind = TEXT("DelegateSignature");
+			}
+			else
+			{
+				// Collapsed/composite sub-graphs aren't in the top-level arrays.
+				Context.GraphKind = TEXT("Other");
+			}
+
+			for (UObject* SelectedObject : BlueprintEditor->GetSelectedNodes())
+			{
+				if (UEdGraphNode* GraphNode = Cast<UEdGraphNode>(SelectedObject))
+				{
+					Context.SelectedNodes.Add(MakeBlueprintNodeInfoFromNode(GraphNode));
+				}
+			}
+			return true;
+		}
+
+		// --- Material editor (mirrors Epic's GetDockedContext UMaterial branch) ---
+		if (UMaterial* Material = Cast<UMaterial>(Asset))
+		{
+			if (EditorName != FName(TEXT("MaterialEditor")))
+			{
+				return false;
+			}
+
+			// MaterialGraph is built by the editor and stays null until it exists.
+			UMaterialGraph* MaterialGraph = Material->MaterialGraph;
+			if (!MaterialGraph)
+			{
+				return false;
+			}
+
+			IMaterialEditor* MaterialEditor = static_cast<IMaterialEditor*>(EditorInstance);
+
+			// The material editor edits a transient preview duplicate, so the live
+			// UMaterial's path is "/Engine/Transient.<Name>" — useless for round-trips.
+			// Recover the original /Game asset by name from the AssetRegistry so the
+			// path feeds MaterialNodeService. Ambiguous (duplicate-named) or unfound
+			// cases fall back to the working-copy path; AssetName is always correct.
+			FString ResolvedPath = Material->GetPathName();
+			if (Material->GetPackage() == GetTransientPackage())
+			{
+				const FAssetRegistryModule& ARModule =
+					FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+				FARFilter Filter;
+				Filter.ClassPaths.Add(UMaterial::StaticClass()->GetClassPathName());
+				Filter.bRecursiveClasses = false;
+				TArray<FAssetData> Candidates;
+				ARModule.Get().GetAssets(Filter, Candidates);
+
+				const FName MaterialName = Material->GetFName();
+				int32 MatchCount = 0;
+				FString FirstMatch;
+				for (const FAssetData& Candidate : Candidates)
+				{
+					if (Candidate.AssetName == MaterialName)
+					{
+						if (MatchCount == 0)
+						{
+							FirstMatch = Candidate.GetObjectPathString();
+						}
+						++MatchCount;
+					}
+				}
+				if (MatchCount == 1)
+				{
+					ResolvedPath = FirstMatch;  // unambiguous original asset
+				}
+			}
+
+			Context.bFound = true;
+			Context.AssetPath = ResolvedPath;
+			Context.AssetName = Material->GetName();
+			Context.EditorType = EditorName.ToString();
+			Context.GraphName = MaterialGraph->GetName();
+			Context.GraphKind = TEXT("Material");
+			Context.GraphNodeCount = MaterialGraph->Nodes.Num();
+
+			// Material expression nodes are UEdGraphNode subclasses, so the same
+			// FBlueprintNodeInfo projection used for K2 nodes applies cleanly.
+			for (UObject* SelectedObject : MaterialEditor->GetSelectedNodes())
+			{
+				if (UEdGraphNode* GraphNode = Cast<UEdGraphNode>(SelectedObject))
+				{
+					Context.SelectedNodes.Add(MakeBlueprintNodeInfoFromNode(GraphNode));
+				}
+			}
+			return true;
+		}
+
+		return false;
+	};
+
+	// Single pass over open assets: prefer the editor whose tab manager owns the
+	// active tab; otherwise remember the first supported editor as a fallback.
+	UObject* FallbackAsset = nullptr;
+	IAssetEditorInstance* FallbackEditor = nullptr;
+
+	for (UObject* Asset : AssetEditorSubsystem->GetAllEditedAssets())
+	{
+		if (!Asset || !(Asset->IsA<UBlueprint>() || Asset->IsA<UMaterial>()))
+		{
+			continue;
+		}
+
+		IAssetEditorInstance* EditorInstance = AssetEditorSubsystem->FindEditorForAsset(Asset, /*bFocusIfOpen=*/false);
+		if (!EditorInstance)
+		{
+			continue;
+		}
+
+		if (ActiveTabManager.IsValid() && EditorInstance->GetAssociatedTabManager() == ActiveTabManager)
+		{
+			// The editor the user is actively focused on — use it directly.
+			if (TryFill(Asset, EditorInstance))
+			{
+				return Context;
+			}
+		}
+
+		if (!FallbackEditor)
+		{
+			FallbackAsset = Asset;
+			FallbackEditor = EditorInstance;
 		}
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("CompileBlueprint: Compiled %s - Success: %s, Errors: %d, Warnings: %d"),
-		*BlueprintPath,
-		Result.bSuccess ? TEXT("true") : TEXT("false"),
-		Result.NumErrors,
-		Result.NumWarnings);
+	// No active-tab match (e.g. focus is on the Content Browser); fall back to the
+	// first open supported editor so the agent still gets useful context.
+	if (FallbackEditor)
+	{
+		TryFill(FallbackAsset, FallbackEditor);
+	}
 
-	return Result;
+	return Context;
 }
+
 
 // ============================================================================
 // ADVANCED NODE OPERATIONS (Phase 4)
 // ============================================================================
-
-FString UBlueprintService::AddFunctionCallNode(
-	const FString& BlueprintPath,
-	const FString& GraphName,
-	const FString& FunctionOwnerClass,
-	const FString& FunctionName,
-	float PosX,
-	float PosY)
-{
-	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
-	if (!Blueprint)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddFunctionCallNode: Failed to load blueprint: %s"), *BlueprintPath);
-		return FString();
-	}
-
-	UEdGraph* Graph = FindGraph(Blueprint, GraphName);
-	if (!Graph)
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddFunctionCallNode: Graph '%s' not found in %s"), *GraphName, *BlueprintPath);
-		return FString();
-	}
-
-	// Find the class that owns the function
-	UClass* OwnerClass = nullptr;
-	UFunction* Function = nullptr;
-	UEdGraphNode* SpawnedNode = nullptr;
-	
-	// Check if this is a self-function call
-	if (FunctionOwnerClass.IsEmpty() || FunctionOwnerClass.Equals(TEXT("Self"), ESearchCase::IgnoreCase))
-	{
-		// First check the generated class for compiled functions
-		if (Blueprint->GeneratedClass)
-		{
-			Function = Blueprint->GeneratedClass->FindFunctionByName(FName(*FunctionName));
-		}
-		
-		// If not found, check function graphs for user-defined functions
-		if (!Function)
-		{
-			for (UEdGraph* FuncGraph : Blueprint->FunctionGraphs)
-			{
-				if (FuncGraph && FuncGraph->GetFName() == FName(*FunctionName))
-				{
-					// Found the function graph, use the generated class function
-					if (Blueprint->GeneratedClass)
-					{
-						Function = Blueprint->GeneratedClass->FindFunctionByName(FName(*FunctionName));
-					}
-					break;
-				}
-			}
-		}
-		
-		if (Function)
-		{
-			OwnerClass = Blueprint->GeneratedClass;
-		}
-		else
-		{
-			UE_LOG(LogTemp, Error, TEXT("AddFunctionCallNode: Self function '%s' not found in blueprint"), *FunctionName);
-			return FString();
-		}
-	}
-	else
-	{
-		// Map common class names to their actual classes
-		if (FunctionOwnerClass.Equals(TEXT("KismetMathLibrary"), ESearchCase::IgnoreCase))
-		{
-			OwnerClass = UKismetMathLibrary::StaticClass();
-		}
-		else if (FunctionOwnerClass.Equals(TEXT("KismetSystemLibrary"), ESearchCase::IgnoreCase))
-		{
-			OwnerClass = UKismetSystemLibrary::StaticClass();
-		}
-		else if (FunctionOwnerClass.Equals(TEXT("KismetStringLibrary"), ESearchCase::IgnoreCase))
-		{
-			OwnerClass = UKismetStringLibrary::StaticClass();
-		}
-		else if (FunctionOwnerClass.Equals(TEXT("KismetArrayLibrary"), ESearchCase::IgnoreCase))
-		{
-			OwnerClass = UKismetArrayLibrary::StaticClass();
-		}
-		else if (FunctionOwnerClass.Equals(TEXT("GameplayStatics"), ESearchCase::IgnoreCase))
-		{
-			OwnerClass = UGameplayStatics::StaticClass();
-		}
-		else
-		{
-			OwnerClass = ResolveClassByName(FunctionOwnerClass);
-		}
-
-		if (!OwnerClass)
-		{
-			UE_LOG(LogTemp, Error, TEXT("AddFunctionCallNode: Class '%s' not found"), *FunctionOwnerClass);
-			return FString();
-		}
-		
-		// Find the function
-		Function = OwnerClass->FindFunctionByName(FName(*FunctionName));
-		if (!Function)
-		{
-			if (UBlueprintFunctionNodeSpawner* FunctionSpawner = FindBestFunctionSpawner(Blueprint, Graph, OwnerClass, FunctionName))
-			{
-				SpawnedNode = FunctionSpawner->Invoke(Graph, IBlueprintNodeBinder::FBindingSet(), FVector2D(PosX, PosY));
-				if (SpawnedNode)
-				{
-					FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
-					if (const UFunction* ResolvedFunction = FunctionSpawner->GetFunction())
-					{
-						UE_LOG(LogTemp, Log, TEXT("AddFunctionCallNode: Resolved '%s::%s' via node spawner fallback to %s::%s"), *FunctionOwnerClass, *FunctionName, *ResolvedFunction->GetOwnerClass()->GetName(), *ResolvedFunction->GetName());
-					}
-					return SpawnedNode->NodeGuid.ToString();
-				}
-
-				UE_LOG(LogTemp, Error, TEXT("AddFunctionCallNode: Spawner fallback matched '%s' in class '%s' but failed to invoke"), *FunctionName, *FunctionOwnerClass);
-				return FString();
-			}
-
-			UE_LOG(LogTemp, Error, TEXT("AddFunctionCallNode: Function '%s' not found in class '%s'"), *FunctionName, *FunctionOwnerClass);
-			return FString();
-		}
-	}
-
-	// Create the call function node
-	UK2Node_CallFunction* CallNode = NewObject<UK2Node_CallFunction>(Graph);
-	CallNode->SetFromFunction(Function);
-
-	// Add to graph
-	Graph->AddNode(CallNode, false, false);
-	CallNode->CreateNewGuid();
-	CallNode->PostPlacedNewNode();
-	CallNode->AllocateDefaultPins();
-
-	// Set position
-	CallNode->NodePosX = PosX;
-	CallNode->NodePosY = PosY;
-
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
-	UE_LOG(LogTemp, Log, TEXT("AddFunctionCallNode: Added %s::%s to %s"), *FunctionOwnerClass, *FunctionName, *GraphName);
-
-	return CallNode->NodeGuid.ToString();
-}
 
 FString UBlueprintService::AddMacroInstanceNode(
 	const FString& BlueprintPath,
@@ -6068,150 +5135,6 @@ FString UBlueprintService::AddFunctionCallOnVariable(
 		*CallNode->NodeGuid.ToString(), *GetterNode->NodeGuid.ToString());
 
 	return CallNode->NodeGuid.ToString();
-}
-
-FString UBlueprintService::AddComparisonNode(
-	const FString& BlueprintPath,
-	const FString& GraphName,
-	const FString& ComparisonType,
-	const FString& ValueType,
-	float PosX,
-	float PosY)
-{
-	// Build the function name based on comparison type and value type
-	FString FunctionName;
-	
-	// UE 5.7: Float operations are now Double - normalize the type
-	FString NormalizedType = ValueType;
-	if (ValueType.Equals(TEXT("Float"), ESearchCase::IgnoreCase))
-	{
-		NormalizedType = TEXT("Double");
-	}
-	
-	if (ComparisonType.Equals(TEXT("Greater"), ESearchCase::IgnoreCase))
-	{
-		FunctionName = FString::Printf(TEXT("Greater_%s%s"), *NormalizedType, *NormalizedType);
-	}
-	else if (ComparisonType.Equals(TEXT("Less"), ESearchCase::IgnoreCase))
-	{
-		FunctionName = FString::Printf(TEXT("Less_%s%s"), *NormalizedType, *NormalizedType);
-	}
-	else if (ComparisonType.Equals(TEXT("GreaterEqual"), ESearchCase::IgnoreCase))
-	{
-		FunctionName = FString::Printf(TEXT("GreaterEqual_%s%s"), *NormalizedType, *NormalizedType);
-	}
-	else if (ComparisonType.Equals(TEXT("LessEqual"), ESearchCase::IgnoreCase))
-	{
-		FunctionName = FString::Printf(TEXT("LessEqual_%s%s"), *NormalizedType, *NormalizedType);
-	}
-	else if (ComparisonType.Equals(TEXT("Equal"), ESearchCase::IgnoreCase))
-	{
-		FunctionName = FString::Printf(TEXT("EqualEqual_%s%s"), *NormalizedType, *NormalizedType);
-	}
-	else if (ComparisonType.Equals(TEXT("NotEqual"), ESearchCase::IgnoreCase))
-	{
-		FunctionName = FString::Printf(TEXT("NotEqual_%s%s"), *NormalizedType, *NormalizedType);
-	}
-	else
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddComparisonNode: Unknown comparison type '%s'"), *ComparisonType);
-		return FString();
-	}
-
-	return AddFunctionCallNode(BlueprintPath, GraphName, TEXT("KismetMathLibrary"), FunctionName, PosX, PosY);
-}
-
-FString UBlueprintService::AddMathNode(
-	const FString& BlueprintPath,
-	const FString& GraphName,
-	const FString& MathOperation,
-	const FString& ValueType,
-	float PosX,
-	float PosY)
-{
-	// Build the function name based on operation and value type
-	FString FunctionName;
-	
-	// UE 5.7: Float operations are now Double - normalize the type
-	FString NormalizedType = ValueType;
-	if (ValueType.Equals(TEXT("Float"), ESearchCase::IgnoreCase))
-	{
-		NormalizedType = TEXT("Double");
-	}
-	
-	if (MathOperation.Equals(TEXT("Add"), ESearchCase::IgnoreCase))
-	{
-		FunctionName = FString::Printf(TEXT("Add_%s%s"), *NormalizedType, *NormalizedType);
-	}
-	else if (MathOperation.Equals(TEXT("Subtract"), ESearchCase::IgnoreCase))
-	{
-		FunctionName = FString::Printf(TEXT("Subtract_%s%s"), *NormalizedType, *NormalizedType);
-	}
-	else if (MathOperation.Equals(TEXT("Multiply"), ESearchCase::IgnoreCase))
-	{
-		FunctionName = FString::Printf(TEXT("Multiply_%s%s"), *NormalizedType, *NormalizedType);
-	}
-	else if (MathOperation.Equals(TEXT("Divide"), ESearchCase::IgnoreCase))
-	{
-		FunctionName = FString::Printf(TEXT("Divide_%s%s"), *NormalizedType, *NormalizedType);
-	}
-	else if (MathOperation.Equals(TEXT("Clamp"), ESearchCase::IgnoreCase))
-	{
-		// Clamp has a different naming convention
-		if (ValueType.Equals(TEXT("Float"), ESearchCase::IgnoreCase))
-		{
-			FunctionName = TEXT("FClamp");
-		}
-		else if (ValueType.Equals(TEXT("Int"), ESearchCase::IgnoreCase))
-		{
-			FunctionName = TEXT("Clamp");
-		}
-		else if (ValueType.Equals(TEXT("Double"), ESearchCase::IgnoreCase))
-		{
-			FunctionName = TEXT("FClamp64");
-		}
-		else
-		{
-			FunctionName = TEXT("FClamp");
-		}
-	}
-	else if (MathOperation.Equals(TEXT("Min"), ESearchCase::IgnoreCase))
-	{
-		if (ValueType.Equals(TEXT("Float"), ESearchCase::IgnoreCase))
-		{
-			FunctionName = TEXT("FMin");
-		}
-		else
-		{
-			FunctionName = TEXT("Min");
-		}
-	}
-	else if (MathOperation.Equals(TEXT("Max"), ESearchCase::IgnoreCase))
-	{
-		if (ValueType.Equals(TEXT("Float"), ESearchCase::IgnoreCase))
-		{
-			FunctionName = TEXT("FMax");
-		}
-		else
-		{
-			FunctionName = TEXT("Max");
-		}
-	}
-	else if (MathOperation.Equals(TEXT("Abs"), ESearchCase::IgnoreCase))
-	{
-		FunctionName = TEXT("Abs");
-	}
-	else if (MathOperation.Equals(TEXT("Negate"), ESearchCase::IgnoreCase))
-	{
-		FunctionName = FString::Printf(TEXT("Negate_%s"), *NormalizedType);
-	}
-	else
-	{
-		UE_LOG(LogTemp, Error, TEXT("AddMathNode: Unknown math operation '%s'"), *MathOperation);
-		return FString();
-	}
-
-	return AddFunctionCallNode(BlueprintPath, GraphName, TEXT("KismetMathLibrary"), FunctionName, PosX, PosY);
 }
 
 TArray<FBlueprintConnectionInfo> UBlueprintService::GetConnections(
@@ -6482,161 +5405,6 @@ bool UBlueprintService::SetNodePosition(
 	return true;
 }
 
-FString UBlueprintService::CreateBlueprint(
-	const FString& BlueprintName,
-	const FString& ParentClass,
-	const FString& BlueprintPath)
-{
-	if (BlueprintName.IsEmpty())
-	{
-		UE_LOG(LogTemp, Error, TEXT("CreateBlueprint: Blueprint name is empty"));
-		return FString();
-	}
-
-	// Determine parent class
-	UClass* ParentClassPtr = AActor::StaticClass(); // Default to Actor
-	if (!ParentClass.IsEmpty())
-	{
-		// Try common class names directly
-		if (ParentClass.Equals(TEXT("Actor"), ESearchCase::IgnoreCase))
-		{
-			ParentClassPtr = AActor::StaticClass();
-		}
-		else if (ParentClass.Equals(TEXT("Pawn"), ESearchCase::IgnoreCase))
-		{
-			ParentClassPtr = APawn::StaticClass();
-		}
-		else if (ParentClass.Equals(TEXT("Character"), ESearchCase::IgnoreCase))
-		{
-			ParentClassPtr = ACharacter::StaticClass();
-		}
-		else if (ParentClass.Equals(TEXT("PlayerController"), ESearchCase::IgnoreCase))
-		{
-			ParentClassPtr = APlayerController::StaticClass();
-		}
-		else
-		{
-			// Try to find the class by full path first
-			ParentClassPtr = FindObject<UClass>(nullptr, *ParentClass);
-			if (!ParentClassPtr)
-			{
-				// Try with /Script/Engine. prefix
-				FString FullPath = FString::Printf(TEXT("/Script/Engine.%s"), *ParentClass);
-				ParentClassPtr = FindObject<UClass>(nullptr, *FullPath);
-			}
-			if (!ParentClassPtr)
-			{
-				// Search all loaded UClass objects by short name (catches plugin classes like StateTreeTaskBlueprintBase)
-				for (TObjectIterator<UClass> It; It; ++It)
-				{
-					if (It->GetName().Equals(ParentClass, ESearchCase::IgnoreCase) ||
-						It->GetName().Equals(FString(TEXT("U")) + ParentClass, ESearchCase::IgnoreCase) ||
-						It->GetName().Equals(FString(TEXT("A")) + ParentClass, ESearchCase::IgnoreCase))
-					{
-						ParentClassPtr = *It;
-						UE_LOG(LogTemp, Log, TEXT("CreateBlueprint: Resolved parent class '%s' via object search to '%s'"), *ParentClass, *It->GetPathName());
-						break;
-					}
-				}
-			}
-			if (!ParentClassPtr)
-			{
-				// Return error rather than silently creating with wrong parent
-				UE_LOG(LogTemp, Error, TEXT("CreateBlueprint: Parent class '%s' not found. Use the full class path (e.g. '/Script/ModuleName.ClassName') or ensure the module is loaded."), *ParentClass);
-				return FString();
-			}
-		}
-	}
-
-	// Build proper package path
-	FString PackagePath = BlueprintPath;
-	PackagePath.ReplaceInline(TEXT("\\"), TEXT("/"));
-	PackagePath.TrimStartAndEndInline();
-	while (PackagePath.EndsWith(TEXT("/")))
-	{
-		PackagePath.LeftChopInline(1);
-	}
-	if (PackagePath.IsEmpty())
-	{
-		PackagePath = TEXT("/Game/Blueprints");
-	}
-
-	const FString FullAssetPath = PackagePath + TEXT("/") + BlueprintName;
-
-	// Check if blueprint already exists
-	if (UEditorAssetLibrary::DoesAssetExist(FullAssetPath))
-	{
-		UE_LOG(LogTemp, Warning, TEXT("CreateBlueprint: Blueprint already exists at '%s', returning existing path"), *FullAssetPath);
-		return FullAssetPath;
-	}
-
-	// Create package
-	UPackage* Package = CreatePackage(*FullAssetPath);
-	if (!Package)
-	{
-		UE_LOG(LogTemp, Error, TEXT("CreateBlueprint: Failed to create package for '%s'"), *FullAssetPath);
-		return FString();
-	}
-
-	// Create blueprint using the matching factory. UBlueprintFactory cannot create
-	// WidgetBlueprints — UserWidget-derived parents need UWidgetBlueprintFactory.
-	UBlueprint* NewBlueprint = nullptr;
-	if (ParentClassPtr->IsChildOf(UUserWidget::StaticClass()))
-	{
-		UWidgetBlueprintFactory* WidgetFactory = NewObject<UWidgetBlueprintFactory>();
-		WidgetFactory->ParentClass = ParentClassPtr;
-
-		NewBlueprint = Cast<UBlueprint>(WidgetFactory->FactoryCreateNew(
-			UWidgetBlueprint::StaticClass(),
-			Package,
-			*BlueprintName,
-			RF_Standalone | RF_Public,
-			nullptr,
-			GWarn
-		));
-	}
-	else
-	{
-		UBlueprintFactory* Factory = NewObject<UBlueprintFactory>();
-		Factory->ParentClass = ParentClassPtr;
-
-		NewBlueprint = Cast<UBlueprint>(Factory->FactoryCreateNew(
-			UBlueprint::StaticClass(),
-			Package,
-			*BlueprintName,
-			RF_Standalone | RF_Public,
-			nullptr,
-			GWarn
-		));
-	}
-
-	if (!NewBlueprint)
-	{
-		UE_LOG(LogTemp, Error, TEXT("CreateBlueprint: Factory failed to create blueprint '%s'"), *BlueprintName);
-		return FString();
-	}
-
-	// Compile immediately so the asset is never left in an uncompiled state. A freshly-created
-	// but uncompiled Widget Blueprint can stack-overflow a later save / thumbnail Slate prepass
-	// (the crash behind issue #435). Cheap for an empty blueprint and makes follow-up edits safe.
-	FKismetEditorUtilities::CompileBlueprint(NewBlueprint);
-
-	// Notify the asset registry
-	FAssetRegistryModule::AssetCreated(NewBlueprint);
-
-	// Mark package dirty
-	Package->MarkPackageDirty();
-
-	// Save the asset
-	if (!UEditorAssetLibrary::SaveAsset(NewBlueprint->GetPathName(), false))
-	{
-		UE_LOG(LogTemp, Warning, TEXT("CreateBlueprint: Created blueprint but failed to save"));
-	}
-
-	UE_LOG(LogTemp, Log, TEXT("CreateBlueprint: Created blueprint '%s' at '%s'"), *BlueprintName, *NewBlueprint->GetPathName());
-	return NewBlueprint->GetPathName();
-}
-
 bool UBlueprintService::GetProperty(
 	const FString& BlueprintPath,
 	const FString& PropertyName,
@@ -6721,91 +5489,6 @@ bool UBlueprintService::SetProperty(
 	UEditorAssetLibrary::SaveAsset(BlueprintPath, false);
 
 	UE_LOG(LogTemp, Log, TEXT("SetProperty: Set property '%s' = '%s'"), *PropertyName, *PropertyValue);
-	return true;
-}
-
-bool UBlueprintService::ReparentBlueprint(
-	const FString& BlueprintPath,
-	const FString& NewParentClass)
-{
-	UBlueprint* Blueprint = LoadBlueprint(BlueprintPath);
-	if (!Blueprint)
-	{
-		UE_LOG(LogTemp, Error, TEXT("ReparentBlueprint: Failed to load blueprint: %s"), *BlueprintPath);
-		return false;
-	}
-
-	if (NewParentClass.IsEmpty())
-	{
-		UE_LOG(LogTemp, Error, TEXT("ReparentBlueprint: New parent class is empty"));
-		return false;
-	}
-
-	// Find the new parent class - try common class names first
-	UClass* NewParent = nullptr;
-	if (NewParentClass.Equals(TEXT("Actor"), ESearchCase::IgnoreCase))
-	{
-		NewParent = AActor::StaticClass();
-	}
-	else if (NewParentClass.Equals(TEXT("Pawn"), ESearchCase::IgnoreCase))
-	{
-		NewParent = APawn::StaticClass();
-	}
-	else if (NewParentClass.Equals(TEXT("Character"), ESearchCase::IgnoreCase))
-	{
-		NewParent = ACharacter::StaticClass();
-	}
-	else if (NewParentClass.Equals(TEXT("PlayerController"), ESearchCase::IgnoreCase))
-	{
-		NewParent = APlayerController::StaticClass();
-	}
-	else
-	{
-		// Try to find by full path first
-		NewParent = FindObject<UClass>(nullptr, *NewParentClass);
-		if (!NewParent)
-		{
-			// Try with /Script/Engine. prefix
-			FString FullPath = FString::Printf(TEXT("/Script/Engine.%s"), *NewParentClass);
-			NewParent = FindObject<UClass>(nullptr, *FullPath);
-		}
-		if (!NewParent)
-		{
-			// Search all loaded UClass objects by short name (catches plugin classes like StateTreeTaskBlueprintBase)
-			for (TObjectIterator<UClass> It; It; ++It)
-			{
-				if (It->GetName().Equals(NewParentClass, ESearchCase::IgnoreCase) ||
-					It->GetName().Equals(FString(TEXT("U")) + NewParentClass, ESearchCase::IgnoreCase) ||
-					It->GetName().Equals(FString(TEXT("A")) + NewParentClass, ESearchCase::IgnoreCase))
-				{
-					NewParent = *It;
-					UE_LOG(LogTemp, Log, TEXT("ReparentBlueprint: Resolved parent class '%s' via object search to '%s'"), *NewParentClass, *It->GetPathName());
-					break;
-				}
-			}
-		}
-	}
-
-	if (!NewParent)
-	{
-		UE_LOG(LogTemp, Error, TEXT("ReparentBlueprint: New parent class '%s' not found"), *NewParentClass);
-		return false;
-	}
-
-	// Perform reparenting (UE5 doesn't have FBlueprintEditorUtils::ReparentBlueprint)
-	FString OldParentName = Blueprint->ParentClass ? Blueprint->ParentClass->GetName() : TEXT("None");
-	
-	// Directly set the parent class
-	Blueprint->ParentClass = NewParent;
-	
-	// Mark for recompilation and save
-	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
-	FKismetEditorUtilities::CompileBlueprint(Blueprint);
-	UEditorAssetLibrary::SaveAsset(BlueprintPath, false);
-	
-	UE_LOG(LogTemp, Log, TEXT("ReparentBlueprint: Reparented '%s' from '%s' to '%s'"),
-		*Blueprint->GetName(), *OldParentName, *NewParent->GetName());
-
 	return true;
 }
 
@@ -6911,7 +5594,6 @@ TArray<FBlueprintNodeTypeInfo> UBlueprintService::DiscoverNodes(
 	
 	// Track seen spawner keys to avoid duplicates
 	TSet<FString> SeenSpawnerKeys;
-	UEdGraph* EventGraph = ResolveBlueprintGraph(Blueprint, TEXT("EventGraph"));
 	
 	// Helper lambda to add a function to results
 	auto AddFunctionToResults = [&](UFunction* Func, const FString& InCategory, const FString& OwnerClassName) -> bool
@@ -6995,6 +5677,12 @@ TArray<FBlueprintNodeTypeInfo> UBlueprintService::DiscoverNodes(
 		return true;
 	};
 
+	// Surfaces ANY spawner from the Blueprint action database — events, functions,
+	// variable get/set, macros, and template/custom K2 nodes (Get Subsystem, Spawn
+	// Actor From Class, …). Function/event spawners get the round-trippable FUNC/EVENT
+	// keys; everything else gets a faithful "SPAWN <NodeClass>|<MenuName>" key that
+	// CreateNodeByKey resolves back to this exact spawner and Invokes (so the node is
+	// created fully bound, e.g. Get Subsystem's CustomClass / a variable's member ref).
 	auto AddNodeSpawnerToResults = [&](UBlueprintNodeSpawner* NodeSpawner) -> bool
 	{
 		if (!NodeSpawner || Results.Num() >= MaxResults)
@@ -7002,43 +5690,69 @@ TArray<FBlueprintNodeTypeInfo> UBlueprintService::DiscoverNodes(
 			return false;
 		}
 
-		UBlueprintEventNodeSpawner* EventSpawner = Cast<UBlueprintEventNodeSpawner>(NodeSpawner);
-		if (!EventSpawner)
+		UClass* SpawnNodeClass = NodeSpawner->NodeClass;
+		// Prime the DEFAULT (context-less) UI spec — pass nullptr, NEVER a real graph.
+		// Passing a TargetGraph makes the node-template cache run FindCompatibleGraph and
+		// check(TargetGraph != nullptr) (BlueprintNodeTemplateCache.cpp), which fatally
+		// asserts for any spawner whose node isn't compatible with that graph (function-
+		// only nodes, anim nodes, …). nullptr skips that whole branch and yields the same
+		// menu name the editor shows context-lessly.
+		const FBlueprintActionUiSpec& UiSpec = NodeSpawner->PrimeDefaultUiSpec(nullptr);
+		const FString DisplayName = UiSpec.MenuName.ToString();
+		if (DisplayName.IsEmpty())
 		{
 			return false;
 		}
+		const FString MenuCategory = UiSpec.Category.ToString();
+		const FString Keywords = UiSpec.Keywords.ToString();
 
-		if (EventSpawner->IsForCustomEvent())
+		FString SpawnerKey;
+		bool bIsPure = false;
+
+		if (UBlueprintEventNodeSpawner* EventSpawner = Cast<UBlueprintEventNodeSpawner>(NodeSpawner))
 		{
-			return false;
+			if (EventSpawner->IsForCustomEvent())
+			{
+				return false; // surfaced separately as "Add Custom Event..."
+			}
+
+			const UFunction* EventFunction = EventSpawner->GetEventFunction();
+			if (EventFunction)
+			{
+				UClass* OwnerClass = EventFunction->GetOwnerClass();
+				if (!OwnerClass || !Blueprint->ParentClass || !Blueprint->ParentClass->IsChildOf(OwnerClass))
+				{
+					return false; // only events this Blueprint can actually implement
+				}
+			}
+
+			SpawnerKey = BuildEventSpawnerKey(EventSpawner);
 		}
-
-		const UFunction* EventFunction = EventSpawner->GetEventFunction();
-		if (EventFunction)
+		else if (UBlueprintFunctionNodeSpawner* FunctionSpawner = Cast<UBlueprintFunctionNodeSpawner>(NodeSpawner))
 		{
-			UClass* OwnerClass = EventFunction->GetOwnerClass();
-			if (!OwnerClass || !Blueprint->ParentClass || !Blueprint->ParentClass->IsChildOf(OwnerClass))
+			const UFunction* Func = FunctionSpawner->GetFunction();
+			if (!Func || !Func->GetOwnerClass() || Func->HasMetaData(TEXT("BlueprintInternalUseOnly")))
 			{
 				return false;
 			}
+			SpawnerKey = FString::Printf(TEXT("FUNC %s::%s"), *Func->GetOwnerClass()->GetName(), *Func->GetName());
+			bIsPure = Func->HasAnyFunctionFlags(FUNC_BlueprintPure);
+		}
+		else
+		{
+			if (!SpawnNodeClass)
+			{
+				return false;
+			}
+			// CreateNodeByKey splits on the FIRST '|', so the node class name (which
+			// never contains '|') is always recovered even if a menu name does.
+			SpawnerKey = FString::Printf(TEXT("SPAWN %s|%s"), *SpawnNodeClass->GetName(), *DisplayName);
 		}
 
-		const FString SpawnerKey = BuildEventSpawnerKey(EventSpawner);
 		if (SpawnerKey.IsEmpty() || SeenSpawnerKeys.Contains(SpawnerKey))
 		{
 			return false;
 		}
-
-		UEdGraph* UiGraph = EventGraph;
-		if (!UiGraph && Blueprint->UbergraphPages.Num() > 0)
-		{
-			UiGraph = Blueprint->UbergraphPages[0].Get();
-		}
-
-		const FBlueprintActionUiSpec& UiSpec = NodeSpawner->PrimeDefaultUiSpec(UiGraph);
-		const FString DisplayName = UiSpec.MenuName.ToString();
-		const FString Keywords = UiSpec.Keywords.ToString();
-		const FString MenuCategory = UiSpec.Category.ToString();
 
 		if (!CategoryLower.IsEmpty() && !MenuCategory.ToLower().Contains(CategoryLower))
 		{
@@ -7047,11 +5761,9 @@ TArray<FBlueprintNodeTypeInfo> UBlueprintService::DiscoverNodes(
 
 		if (!SearchLower.IsEmpty())
 		{
-			const FString EventFunctionName = EventFunction ? EventFunction->GetName() : FString(TEXT("Custom Event"));
 			const bool bMatches = DisplayName.ToLower().Contains(SearchLower) ||
-				EventFunctionName.ToLower().Contains(SearchLower) ||
-				Keywords.ToLower().Contains(SearchLower);
-
+				Keywords.ToLower().Contains(SearchLower) ||
+				SpawnerKey.ToLower().Contains(SearchLower);
 			if (!bMatches)
 			{
 				return false;
@@ -7062,10 +5774,10 @@ TArray<FBlueprintNodeTypeInfo> UBlueprintService::DiscoverNodes(
 
 		FBlueprintNodeTypeInfo Info;
 		Info.DisplayName = DisplayName;
-		Info.Category = MenuCategory.IsEmpty() ? TEXT("Add Event") : MenuCategory;
-		Info.NodeClass = NodeSpawner->NodeClass ? NodeSpawner->NodeClass->GetName() : TEXT("K2Node_Event");
+		Info.Category = MenuCategory.IsEmpty() ? TEXT("Other") : MenuCategory;
+		Info.NodeClass = SpawnNodeClass ? SpawnNodeClass->GetName() : TEXT("K2Node_Event");
 		Info.SpawnerKey = SpawnerKey;
-		Info.bIsPure = false;
+		Info.bIsPure = bIsPure;
 		Info.bIsLatent = false;
 		Info.Tooltip = UiSpec.Tooltip.ToString();
 
@@ -8111,6 +6823,53 @@ FString UBlueprintService::CreateNodeByKey(
 		NewNode->AllocateDefaultPins();
 		NewNode->NodePosX = PosX;
 		NewNode->NodePosY = PosY;
+	}
+	else if (KeyType.Equals(TEXT("SPAWN"), ESearchCase::IgnoreCase))
+	{
+		// SPAWN <NodeClassName>|<MenuName> — re-find the exact action-database spawner
+		// (matched by node class + primed menu name) and Invoke it, so template /
+		// variable / custom nodes are created fully bound exactly as the editor's
+		// Add-Node menu would (e.g. Get Subsystem's CustomClass, a variable's member
+		// reference). Split on the FIRST '|' only — node class names never contain it.
+		FString NodeClassName, MenuName;
+		if (!KeyValue.Split(TEXT("|"), &NodeClassName, &MenuName))
+		{
+			UE_LOG(LogTemp, Error, TEXT("CreateNodeByKey: Invalid SPAWN key format: %s"), *KeyValue);
+			return FString();
+		}
+
+		const FBlueprintActionDatabase::FActionRegistry& ActionRegistry = FBlueprintActionDatabase::Get().GetAllActions();
+		UBlueprintNodeSpawner* MatchSpawner = nullptr;
+		for (const TPair<FObjectKey, FBlueprintActionDatabase::FActionList>& Entry : ActionRegistry)
+		{
+			for (UBlueprintNodeSpawner* Candidate : Entry.Value)
+			{
+				if (!Candidate || !Candidate->NodeClass || Candidate->NodeClass->GetName() != NodeClassName)
+				{
+					continue;
+				}
+				// Context-less prime (nullptr) — must match discovery, and avoids the
+				// node-template-cache assert for graph-incompatible spawners.
+				const FBlueprintActionUiSpec& CandidateUi = Candidate->PrimeDefaultUiSpec(nullptr);
+				if (CandidateUi.MenuName.ToString() == MenuName)
+				{
+					MatchSpawner = Candidate;
+					break;
+				}
+			}
+			if (MatchSpawner)
+			{
+				break;
+			}
+		}
+
+		if (!MatchSpawner)
+		{
+			UE_LOG(LogTemp, Error, TEXT("CreateNodeByKey: No action-database spawner matched SPAWN key '%s'"), *KeyValue);
+			return FString();
+		}
+
+		NewNode = MatchSpawner->Invoke(Graph, IBlueprintNodeBinder::FBindingSet(), FVector2D(PosX, PosY));
 	}
 	else if (KeyType.Equals(TEXT("STRUCT"), ESearchCase::IgnoreCase))
 	{
@@ -9939,6 +8698,57 @@ UEdGraphNode* UBlueprintService::CreateNodeFromDesc(
 		return GetNode;
 	}
 
+	// ── member_set ──
+	// Symmetric to member_get: SET a property that belongs to ANOTHER class (e.g. a
+	// component's property like UCharacterMovementComponent::MaxWalkSpeed). Produces a
+	// K2Node_VariableSet with bSelfContext=false, exposing the value pin plus a typed
+	// "self"/Target pin to wire the owning object (e.g. a Get CharacterMovement node).
+	// Use plain variable_set for properties on the Blueprint itself.
+	// Params: member = property name, class = owning class name (e.g. "CharacterMovementComponent").
+	if (Type.Equals(TEXT("member_set"), ESearchCase::IgnoreCase))
+	{
+		const FString* MemberName = Desc.Params.Find(TEXT("member"));
+		const FString* ClassName = Desc.Params.Find(TEXT("class"));
+		if (!MemberName || !ClassName)
+		{
+			OutError = FString::Printf(TEXT("Node '%s': member_set requires 'member' and 'class' params"), *Desc.Ref);
+			return nullptr;
+		}
+
+		UClass* OwnerClass = nullptr;
+		for (TObjectIterator<UClass> It; It; ++It)
+		{
+			if (It->GetName() == *ClassName)
+			{
+				OwnerClass = *It;
+				break;
+			}
+		}
+
+		if (!OwnerClass)
+		{
+			OutError = FString::Printf(TEXT("Node '%s': Class '%s' not found"), *Desc.Ref, **ClassName);
+			return nullptr;
+		}
+
+		FProperty* MemberProp = FindFProperty<FProperty>(OwnerClass, FName(**MemberName));
+		if (!MemberProp)
+		{
+			OutError = FString::Printf(TEXT("Node '%s': Member '%s' not found on '%s'"), *Desc.Ref, **MemberName, **ClassName);
+			return nullptr;
+		}
+
+		UK2Node_VariableSet* SetNode = NewObject<UK2Node_VariableSet>(Graph);
+		SetNode->VariableReference.SetExternalMember(FName(**MemberName), OwnerClass);
+		SetNode->NodePosX = PosX;
+		SetNode->NodePosY = PosY;
+		Graph->AddNode(SetNode, false, false);
+		SetNode->CreateNewGuid();
+		SetNode->PostPlacedNewNode();
+		SetNode->AllocateDefaultPins();
+		return SetNode;
+	}
+
 	// ── create_delegate ──
 	if (Type.Equals(TEXT("create_delegate"), ESearchCase::IgnoreCase))
 	{
@@ -10247,6 +9057,429 @@ bool UBlueprintService::BuildGraph(
 // AutoLayoutGraph
 // ────────────────────────────────────────────────────────────────
 
+// ────────────────────────────────────────────────────────────────
+// Shared layered graph layout used by AutoLayoutGraph + AutoLayoutSelectedNodes.
+// Columns by dependency depth (longest path over BOTH exec and data edges, so
+// deep data chains step rightward instead of collapsing into one column),
+// independent components stacked into non-overlapping horizontal bands, wire
+// crossings reduced with median ordering sweeps, and rows spaced by node size.
+// ────────────────────────────────────────────────────────────────
+namespace VibeUELayout
+{
+	static float EstimateNodeHeight(const UEdGraphNode* Node)
+	{
+		int32 In = 0, Out = 0;
+		for (const UEdGraphPin* P : Node->Pins)
+		{
+			if (!P || P->bHidden) continue;
+			if (P->Direction == EGPD_Input) ++In; else ++Out;
+		}
+		const int32 Rows = FMath::Max3(In, Out, 1);
+		return 72.0f + (float)Rows * 26.0f;
+	}
+
+	// Lay out Nodes left-to-right anchored at (OriginX, OriginY). Returns component count.
+	static int32 LayeredLayout(const TArray<UEdGraphNode*>& Nodes, float OriginX, float OriginY)
+	{
+		if (Nodes.Num() == 0)
+		{
+			return 0;
+		}
+
+		TSet<UEdGraphNode*> InSet(Nodes);
+
+		// Precedence edges (source -> target) for every link (exec AND data) within the set.
+		TMap<UEdGraphNode*, TArray<UEdGraphNode*>> Succ;
+		TMap<UEdGraphNode*, TArray<UEdGraphNode*>> Pred;
+		TMap<UEdGraphNode*, TArray<UEdGraphNode*>> ExecSucc;
+		TMap<UEdGraphNode*, TArray<UEdGraphNode*>> ExecPred;
+		for (UEdGraphNode* N : Nodes)
+		{
+			for (UEdGraphPin* P : N->Pins)
+			{
+				if (!P || P->Direction != EGPD_Output)
+				{
+					continue;
+				}
+				for (UEdGraphPin* L : P->LinkedTo)
+				{
+					UEdGraphNode* T = L ? L->GetOwningNode() : nullptr;
+					if (!T || T == N || !InSet.Contains(T))
+					{
+						continue;
+					}
+					Succ.FindOrAdd(N).AddUnique(T);
+					Pred.FindOrAdd(T).AddUnique(N);
+					if (P->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+					{
+						ExecSucc.FindOrAdd(N).AddUnique(T);
+						ExecPred.FindOrAdd(T).AddUnique(N);
+					}
+				}
+			}
+		}
+
+		// Break cycles for layering: classify edges with an iterative DFS and drop
+		// back-edges (edges pointing at a node still on the DFS stack). The remaining
+		// edges form a DAG, so longest-path layering is well-defined and a cycle (a loop
+		// body wired back to its loop, recursion, etc.) can never inflate columns. The
+		// back-edge is still drawn as a wire; it just doesn't drive column assignment.
+		TMap<UEdGraphNode*, int32> VisitRank; // DFS pre-order rank (pin-ordered) for stable within-layer seeding
+		TMap<UEdGraphNode*, TArray<UEdGraphNode*>> LayerSucc;
+		TMap<UEdGraphNode*, TArray<UEdGraphNode*>> LayerPred;
+		{
+			TSet<UEdGraphNode*> Visited;
+			TSet<UEdGraphNode*> OnStack;
+			// Seed DFS from exec entry points (events) first, then other roots (no
+			// predecessors), then everything else — so the dropped edge is the genuine
+			// loop-back rather than an arbitrary forward edge, and loop bodies still flow L->R.
+			TArray<UEdGraphNode*> SeedOrder;
+			for (UEdGraphNode* SN : Nodes)
+			{
+				if (SN->IsA<UK2Node_Event>() || SN->IsA<UK2Node_CustomEvent>()) { SeedOrder.AddUnique(SN); }
+			}
+			for (UEdGraphNode* SN : Nodes)
+			{
+				const TArray<UEdGraphNode*>* PP = Pred.Find(SN);
+				if (!PP || PP->Num() == 0) { SeedOrder.AddUnique(SN); }
+			}
+			for (UEdGraphNode* SN : Nodes) { SeedOrder.AddUnique(SN); }
+
+			for (UEdGraphNode* Seed : SeedOrder)
+			{
+				if (Visited.Contains(Seed))
+				{
+					continue;
+				}
+				TArray<TPair<UEdGraphNode*, int32>> Stack;
+				Stack.Push(TPair<UEdGraphNode*, int32>(Seed, 0));
+				OnStack.Add(Seed);
+					VisitRank.Add(Seed, VisitRank.Num());
+				while (Stack.Num() > 0)
+				{
+					const int32 TopIdx = Stack.Num() - 1;
+					UEdGraphNode* U = Stack[TopIdx].Key;
+					const int32 ChildI = Stack[TopIdx].Value;
+					const TArray<UEdGraphNode*>* Children = Succ.Find(U);
+					if (Children && ChildI < Children->Num())
+					{
+						Stack[TopIdx].Value = ChildI + 1;
+						UEdGraphNode* V = (*Children)[ChildI];
+						if (OnStack.Contains(V))
+						{
+							continue; // back-edge: skip for layering
+						}
+						LayerSucc.FindOrAdd(U).AddUnique(V);
+						LayerPred.FindOrAdd(V).AddUnique(U);
+						if (!Visited.Contains(V))
+						{
+							OnStack.Add(V);
+								VisitRank.Add(V, VisitRank.Num());
+							Stack.Push(TPair<UEdGraphNode*, int32>(V, 0));
+						}
+					}
+					else
+					{
+						OnStack.Remove(U);
+						Visited.Add(U);
+						Stack.Pop();
+					}
+				}
+			}
+		}
+
+		// Layer = longest path over the acyclic edge set (Kahn topological order).
+		TMap<UEdGraphNode*, int32> Layer;
+		TMap<UEdGraphNode*, int32> Deg;
+		for (UEdGraphNode* N : Nodes)
+		{
+			Layer.Add(N, 0);
+			Deg.Add(N, 0);
+		}
+		for (const TPair<UEdGraphNode*, TArray<UEdGraphNode*>>& Pair : LayerPred)
+		{
+			Deg[Pair.Key] = Pair.Value.Num();
+		}
+
+		TQueue<UEdGraphNode*> Q;
+		for (UEdGraphNode* N : Nodes)
+		{
+			if (Deg[N] == 0)
+			{
+				Q.Enqueue(N);
+			}
+		}
+		while (!Q.IsEmpty())
+		{
+			UEdGraphNode* C = nullptr;
+			Q.Dequeue(C);
+			if (const TArray<UEdGraphNode*>* S = LayerSucc.Find(C))
+			{
+				for (UEdGraphNode* T : *S)
+				{
+					Layer[T] = FMath::Max(Layer[T], Layer[C] + 1);
+					if (--Deg[T] <= 0)
+					{
+						Q.Enqueue(T);
+					}
+				}
+			}
+		}
+
+		// Components via undirected flood fill (for vertical band separation).
+		TMap<UEdGraphNode*, int32> Comp;
+		int32 NumComp = 0;
+		for (UEdGraphNode* Start : Nodes)
+		{
+			if (Comp.Contains(Start))
+			{
+				continue;
+			}
+			const int32 Id = NumComp++;
+			TQueue<UEdGraphNode*> BQ;
+			BQ.Enqueue(Start);
+			Comp.Add(Start, Id);
+			while (!BQ.IsEmpty())
+			{
+				UEdGraphNode* Cur = nullptr;
+				BQ.Dequeue(Cur);
+				auto Visit = [&](UEdGraphNode* M)
+				{
+					if (M && !Comp.Contains(M))
+					{
+						Comp.Add(M, Id);
+						BQ.Enqueue(M);
+					}
+				};
+				if (const TArray<UEdGraphNode*>* S = Succ.Find(Cur)) { for (UEdGraphNode* M : *S) Visit(M); }
+				if (const TArray<UEdGraphNode*>* Pp = Pred.Find(Cur)) { for (UEdGraphNode* M : *Pp) Visit(M); }
+			}
+		}
+
+		// Rank components: those containing events first, then larger ones (keeps the
+		// main event/function chain at the top).
+		TArray<int32> CompNodeCount;
+		TArray<int32> CompEventCount;
+		CompNodeCount.Init(0, NumComp);
+		CompEventCount.Init(0, NumComp);
+		for (const TPair<UEdGraphNode*, int32>& Pair : Comp)
+		{
+			CompNodeCount[Pair.Value]++;
+			if (Pair.Key->IsA<UK2Node_Event>() || Pair.Key->IsA<UK2Node_CustomEvent>())
+			{
+				CompEventCount[Pair.Value]++;
+			}
+		}
+		TArray<int32> CompOrder;
+		for (int32 i = 0; i < NumComp; ++i)
+		{
+			CompOrder.Add(i);
+		}
+		CompOrder.Sort([&](int32 A, int32 B)
+		{
+			if (CompEventCount[A] != CompEventCount[B]) return CompEventCount[A] > CompEventCount[B];
+			return CompNodeCount[A] > CompNodeCount[B];
+		});
+		TArray<int32> CompRank;
+		CompRank.Init(0, NumComp);
+		for (int32 i = 0; i < CompOrder.Num(); ++i)
+		{
+			CompRank[CompOrder[i]] = i;
+		}
+
+		// rank -> layer -> nodes, seeded in current visual order for determinism.
+		TMap<int32, TMap<int32, TArray<UEdGraphNode*>>> Grid;
+		for (UEdGraphNode* N : Nodes)
+		{
+			Grid.FindOrAdd(CompRank[Comp[N]]).FindOrAdd(Layer[N]).Add(N);
+		}
+		for (TPair<int32, TMap<int32, TArray<UEdGraphNode*>>>& RankPair : Grid)
+		{
+			for (TPair<int32, TArray<UEdGraphNode*>>& LayerPair : RankPair.Value)
+			{
+				LayerPair.Value.Sort([&VisitRank](const UEdGraphNode& A, const UEdGraphNode& B)
+				{
+					const int32* RA = VisitRank.Find(const_cast<UEdGraphNode*>(&A));
+					const int32* RB = VisitRank.Find(const_cast<UEdGraphNode*>(&B));
+					const int32 VA = RA ? *RA : MAX_int32;
+					const int32 VB = RB ? *RB : MAX_int32;
+					if (VA != VB) return VA < VB;
+					return A.NodePosY < B.NodePosY;
+				});
+			}
+		}
+
+		// Index of each node within its layer.
+		TMap<UEdGraphNode*, int32> Idx;
+		for (TPair<int32, TMap<int32, TArray<UEdGraphNode*>>>& RankPair : Grid)
+		{
+			for (TPair<int32, TArray<UEdGraphNode*>>& LayerPair : RankPair.Value)
+			{
+				for (int32 i = 0; i < LayerPair.Value.Num(); ++i)
+				{
+					Idx.Add(LayerPair.Value[i], i);
+				}
+			}
+		}
+
+		// Median ordering sweeps (down by predecessors, up by successors) to cut crossings.
+		for (int32 Sweep = 0; Sweep < 4; ++Sweep)
+		{
+			const bool bDown = (Sweep % 2) == 0;
+			for (TPair<int32, TMap<int32, TArray<UEdGraphNode*>>>& RankPair : Grid)
+			{
+				TArray<int32> LayerKeys;
+				RankPair.Value.GetKeys(LayerKeys);
+				LayerKeys.Sort();
+				if (!bDown)
+				{
+					for (int32 a = 0, b = LayerKeys.Num() - 1; a < b; ++a, --b) { LayerKeys.Swap(a, b); }
+				}
+				for (int32 LK : LayerKeys)
+				{
+					TArray<UEdGraphNode*>& LayerNodes = RankPair.Value[LK];
+					TArray<TPair<float, UEdGraphNode*>> Keyed;
+					Keyed.Reserve(LayerNodes.Num());
+					for (UEdGraphNode* N : LayerNodes)
+					{
+						const TArray<UEdGraphNode*>* Adj = bDown ? Pred.Find(N) : Succ.Find(N);
+						float Median = (float)Idx[N];
+						if (Adj && Adj->Num() > 0)
+						{
+							TArray<int32> Positions;
+							for (UEdGraphNode* M : *Adj)
+							{
+								if (const int32* PIdx = Idx.Find(M)) { Positions.Add(*PIdx); }
+							}
+							if (Positions.Num() > 0)
+							{
+								Positions.Sort();
+								Median = (float)Positions[Positions.Num() / 2];
+							}
+						}
+						Keyed.Add(TPair<float, UEdGraphNode*>(Median, N));
+					}
+					Keyed.StableSort([](const TPair<float, UEdGraphNode*>& A, const TPair<float, UEdGraphNode*>& B)
+					{
+						return A.Key < B.Key;
+					});
+					for (int32 i = 0; i < Keyed.Num(); ++i)
+					{
+						LayerNodes[i] = Keyed[i].Value;
+						Idx[LayerNodes[i]] = i;
+					}
+				}
+			}
+		}
+
+		// Assign positions: X by layer; Y straightened by aligning each node to the
+		// median center of its connected neighbors (priority method) so chains and the
+		// exec backbone stay horizontal instead of sloping. Independent components are
+		// placed in stacked, non-overlapping bands.
+		const float ColumnWidth = 420.0f;
+		const float RowGap = 56.0f;
+		const float ComponentGap = 160.0f;
+
+		TArray<int32> Ranks;
+		Grid.GetKeys(Ranks);
+		Ranks.Sort();
+
+		float BandTop = OriginY;
+		for (int32 Rank : Ranks)
+		{
+			TMap<int32, TArray<UEdGraphNode*>>& Layers = Grid[Rank];
+
+			TArray<int32> LayerKeys;
+			Layers.GetKeys(LayerKeys);
+			LayerKeys.Sort();
+
+			// Band-relative Y, seeded by a simple top-aligned stack per column.
+			TMap<UEdGraphNode*, float> Y;
+			for (int32 LK : LayerKeys)
+			{
+				float Cursor = 0.0f;
+				for (UEdGraphNode* N : Layers[LK])
+				{
+					Y.Add(N, Cursor);
+					Cursor += EstimateNodeHeight(N) + RowGap;
+				}
+			}
+
+			// Alignment sweeps: pull each node toward the median center-Y of its neighbors
+			// on the already-placed side, then resolve overlaps in column order. Alternating
+			// L->R / R->L converges to straight chains without a systematic downward drift.
+			for (int32 Iter = 0; Iter < 6; ++Iter)
+			{
+				const bool bLeftToRight = (Iter % 2) == 0;
+				TArray<int32> Order = LayerKeys;
+				if (!bLeftToRight)
+				{
+					for (int32 a = 0, b = Order.Num() - 1; a < b; ++a, --b) { Order.Swap(a, b); }
+				}
+				for (int32 LK : Order)
+				{
+					TArray<UEdGraphNode*>& LayerNodes = Layers[LK];
+					float Cursor = -FLT_MAX;
+					for (UEdGraphNode* N : LayerNodes)
+					{
+						const float H = EstimateNodeHeight(N);
+						// Align to the median center-Y of ALL neighbors (both sides) so leaf nodes
+							// (e.g. a loop's Completed output) snap next to their single neighbor.
+							TArray<float> Centers;
+							// Prefer EXEC neighbors so the execution backbone stays straight; fall back
+							// to data neighbors only for pure (exec-less) nodes like math/getters.
+							auto Gather = [&](const TMap<UEdGraphNode*, TArray<UEdGraphNode*>>& AdjMap)
+							{
+								if (const TArray<UEdGraphNode*>* A = AdjMap.Find(N))
+								{
+									for (UEdGraphNode* M : *A)
+									{
+										if (const float* MY = Y.Find(M)) { Centers.Add(*MY + EstimateNodeHeight(M) * 0.5f); }
+									}
+								}
+							};
+							Gather(ExecPred);
+							Gather(ExecSucc);
+							if (Centers.Num() == 0) { Gather(Pred); Gather(Succ); }
+							float DesiredTop = Y[N];
+							if (Centers.Num() > 0)
+							{
+								Centers.Sort();
+								DesiredTop = Centers[Centers.Num() / 2] - H * 0.5f;
+							}
+							const float Target = FMath::Max(DesiredTop, Cursor);
+						Y[N] = Target;
+						Cursor = Target + H + RowGap;
+					}
+				}
+			}
+
+			// Shift the band so its top sits at BandTop, commit positions, advance.
+			float MinY = FLT_MAX;
+			float MaxY = -FLT_MAX;
+			for (const TPair<UEdGraphNode*, float>& YPair : Y)
+			{
+				MinY = FMath::Min(MinY, YPair.Value);
+				MaxY = FMath::Max(MaxY, YPair.Value + EstimateNodeHeight(YPair.Key));
+			}
+			const float Shift = BandTop - MinY;
+			for (int32 LK : LayerKeys)
+			{
+				for (UEdGraphNode* N : Layers[LK])
+				{
+					N->Modify();
+					N->NodePosX = (int32)(OriginX + (float)LK * ColumnWidth);
+					N->NodePosY = (int32)(Y[N] + Shift);
+				}
+			}
+
+			BandTop += (MaxY - MinY) + ComponentGap;
+		}
+
+		return NumComp;
+	}
+} // namespace VibeUELayout
+
 bool UBlueprintService::AutoLayoutGraph(
 	const FString& BlueprintPath,
 	const FString& GraphName,
@@ -10270,17 +9503,12 @@ bool UBlueprintService::AutoLayoutGraph(
 		return false;
 	}
 
-	// Collect all layoutable nodes (skip comments and knots for now)
+	// Lay out every node in the graph.
 	TArray<UEdGraphNode*> LayoutNodes;
 	for (UEdGraphNode* Node : Graph->Nodes)
 	{
-		if (Node && Node->CanUserDeleteNode())
+		if (Node)
 		{
-			LayoutNodes.Add(Node);
-		}
-		else if (Node)
-		{
-			// Entry/Result nodes — include them too
 			LayoutNodes.Add(Node);
 		}
 	}
@@ -10290,397 +9518,11 @@ bool UBlueprintService::AutoLayoutGraph(
 		return true; // Nothing to layout
 	}
 
-	// ── Pass 1: Layer Assignment (longest-path from roots) ──
-	// Build adjacency: exec output → target node
-	TMap<UEdGraphNode*, TArray<UEdGraphNode*>> ExecSuccessors;
-	TMap<UEdGraphNode*, TArray<UEdGraphNode*>> ExecPredecessors;
-	TMap<UEdGraphNode*, TArray<UEdGraphNode*>> DataConsumers; // pure node → nodes that use its output
-
-	for (UEdGraphNode* Node : LayoutNodes)
-	{
-		for (UEdGraphPin* Pin : Node->Pins)
-		{
-			if (!Pin) continue;
-
-			if (Pin->Direction == EGPD_Output && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
-			{
-				for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
-				{
-					if (LinkedPin && LinkedPin->GetOwningNode())
-					{
-						UEdGraphNode* Target = LinkedPin->GetOwningNode();
-						ExecSuccessors.FindOrAdd(Node).AddUnique(Target);
-						ExecPredecessors.FindOrAdd(Target).AddUnique(Node);
-					}
-				}
-			}
-			else if (Pin->Direction == EGPD_Output && Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
-			{
-				for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
-				{
-					if (LinkedPin && LinkedPin->GetOwningNode())
-					{
-						DataConsumers.FindOrAdd(Node).AddUnique(LinkedPin->GetOwningNode());
-					}
-				}
-			}
-		}
-	}
-
-	// Identify roots: nodes with no incoming exec
-	TArray<UEdGraphNode*> Roots;
-	for (UEdGraphNode* Node : LayoutNodes)
-	{
-		bool bHasExecInput = false;
-		for (UEdGraphPin* Pin : Node->Pins)
-		{
-			if (Pin && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec && Pin->Direction == EGPD_Input && Pin->LinkedTo.Num() > 0)
-			{
-				bHasExecInput = true;
-				break;
-			}
-		}
-
-		// Also check if node has exec pins at all
-		bool bHasAnyExecPin = false;
-		for (UEdGraphPin* Pin : Node->Pins)
-		{
-			if (Pin && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
-			{
-				bHasAnyExecPin = true;
-				break;
-			}
-		}
-
-		if (!bHasExecInput && bHasAnyExecPin)
-		{
-			Roots.Add(Node);
-		}
-	}
-
-	// BFS to assign layers
-	TMap<UEdGraphNode*, int32> NodeLayer;
-	TQueue<UEdGraphNode*> Queue;
-
-	for (UEdGraphNode* Root : Roots)
-	{
-		NodeLayer.Add(Root, 0);
-		Queue.Enqueue(Root);
-	}
-
-	while (!Queue.IsEmpty())
-	{
-		UEdGraphNode* Current;
-		Queue.Dequeue(Current);
-
-		int32 CurrentLayer = NodeLayer[Current];
-		const TArray<UEdGraphNode*>* Succs = ExecSuccessors.Find(Current);
-		if (Succs)
-		{
-			for (UEdGraphNode* Succ : *Succs)
-			{
-				int32 NewLayer = CurrentLayer + 1;
-				int32* ExistingLayer = NodeLayer.Find(Succ);
-				if (!ExistingLayer || *ExistingLayer < NewLayer)
-				{
-					NodeLayer.Add(Succ, NewLayer);
-					Queue.Enqueue(Succ);
-				}
-			}
-		}
-	}
-
-	// Check if exec-based BFS produced any meaningful layering.
-	// If all layered nodes are at layer 0 (common for pure functions with no exec connections),
-	// fall back to data-flow-based layering instead.
-	bool bExecFlowIsFlat = true;
-	for (auto& Pair : NodeLayer)
-	{
-		if (Pair.Value > 0)
-		{
-			bExecFlowIsFlat = false;
-			break;
-		}
-	}
-
-	if (bExecFlowIsFlat && LayoutNodes.Num() > 1)
-	{
-		// ── Data-flow fallback: assign layers by longest data-flow path from sources ──
-		// Build data-flow adjacency: for each node, find nodes whose outputs feed into it
-		TMap<UEdGraphNode*, TArray<UEdGraphNode*>> DataPredecessors;
-		for (UEdGraphNode* Node : LayoutNodes)
-		{
-			for (UEdGraphPin* Pin : Node->Pins)
-			{
-				if (Pin && Pin->Direction == EGPD_Input && Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
-				{
-					for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
-					{
-						if (LinkedPin && LinkedPin->GetOwningNode())
-						{
-							DataPredecessors.FindOrAdd(Node).AddUnique(LinkedPin->GetOwningNode());
-						}
-					}
-				}
-			}
-		}
-
-		// Topological sort via BFS (Kahn's algorithm) to assign layers by data-flow depth.
-		// Nodes with no data predecessors start at layer 0.
-		NodeLayer.Empty();
-
-		// Compute in-degree for each node in data flow
-		TMap<UEdGraphNode*, int32> InDegree;
-		for (UEdGraphNode* Node : LayoutNodes)
-		{
-			InDegree.FindOrAdd(Node); // ensure entry exists (default 0)
-		}
-		for (auto& Pair : DataPredecessors)
-		{
-			InDegree.FindOrAdd(Pair.Key) = Pair.Value.Num();
-		}
-
-		// Seed BFS with data sources (in-degree 0)
-		TQueue<UEdGraphNode*> DataQueue;
-		for (auto& Pair : InDegree)
-		{
-			if (Pair.Value == 0)
-			{
-				NodeLayer.Add(Pair.Key, 0);
-				DataQueue.Enqueue(Pair.Key);
-			}
-		}
-
-		while (!DataQueue.IsEmpty())
-		{
-			UEdGraphNode* Current;
-			DataQueue.Dequeue(Current);
-			int32 CurrentLayer = NodeLayer.FindRef(Current);
-
-			const TArray<UEdGraphNode*>* Consumers = DataConsumers.Find(Current);
-			if (Consumers)
-			{
-				for (UEdGraphNode* Consumer : *Consumers)
-				{
-					int32 NewLayer = CurrentLayer + 1;
-					int32* ExistingLayer = NodeLayer.Find(Consumer);
-					if (!ExistingLayer || *ExistingLayer < NewLayer)
-					{
-						NodeLayer.Add(Consumer, NewLayer);
-					}
-
-					// Decrement in-degree; enqueue when all predecessors processed
-					int32& Deg = InDegree.FindOrAdd(Consumer);
-					Deg--;
-					if (Deg <= 0)
-					{
-						DataQueue.Enqueue(Consumer);
-					}
-				}
-			}
-		}
-
-		// Assign any remaining unreached nodes to layer 0
-		for (UEdGraphNode* Node : LayoutNodes)
-		{
-			if (!NodeLayer.Contains(Node))
-			{
-				NodeLayer.Add(Node, 0);
-			}
-		}
-	}
-	else
-	{
-		// Original exec-based layering worked — place pure nodes relative to consumers.
-		for (UEdGraphNode* Node : LayoutNodes)
-		{
-			if (NodeLayer.Contains(Node)) continue;
-
-			bool bHasExecPin = false;
-			for (UEdGraphPin* Pin : Node->Pins)
-			{
-				if (Pin && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
-				{
-					bHasExecPin = true;
-					break;
-				}
-			}
-
-			if (!bHasExecPin)
-			{
-				// Find the minimum layer of any consumer
-				int32 MinConsumerLayer = INT32_MAX;
-				const TArray<UEdGraphNode*>* Consumers = DataConsumers.Find(Node);
-				if (Consumers)
-				{
-					for (UEdGraphNode* Consumer : *Consumers)
-					{
-						const int32* ConsumerLayer = NodeLayer.Find(Consumer);
-						if (ConsumerLayer && *ConsumerLayer < MinConsumerLayer)
-						{
-							MinConsumerLayer = *ConsumerLayer;
-						}
-					}
-				}
-
-				if (MinConsumerLayer == INT32_MAX)
-				{
-					MinConsumerLayer = 0; // Disconnected pure node
-				}
-
-				// Place pure nodes one column LEFT of their consumer so they appear
-				// as data inputs flowing into the exec node, not stacked alongside it.
-				NodeLayer.Add(Node, FMath::Max(0, MinConsumerLayer - 1));
-			}
-			else
-			{
-				// Exec node never reached by BFS — disconnected island
-				NodeLayer.Add(Node, 0);
-			}
-		}
-	}
-
-	// ── Pass 2: Identify connected execution chains for vertical band separation ──
-	// Each independent event chain gets its own Y band so chains never overlap.
-	// Build reverse data lookup: consumer → pure nodes that feed it.
-	TMap<UEdGraphNode*, TArray<UEdGraphNode*>> DataProviders;
-	for (auto& Pair : DataConsumers)
-		for (UEdGraphNode* Consumer : Pair.Value)
-			DataProviders.FindOrAdd(Consumer).AddUnique(Pair.Key);
-
-	// BFS flood-fill treating exec + data edges as undirected to find components.
-	TMap<UEdGraphNode*, int32> NodeChainId;
-	int32 NumChains = 0;
-	for (UEdGraphNode* StartNode : LayoutNodes)
-	{
-		if (NodeChainId.Contains(StartNode)) continue;
-		int32 ChainId = NumChains++;
-		TQueue<UEdGraphNode*> BFSQ;
-		BFSQ.Enqueue(StartNode);
-		NodeChainId.Add(StartNode, ChainId);
-		while (!BFSQ.IsEmpty())
-		{
-			UEdGraphNode* Cur;
-			BFSQ.Dequeue(Cur);
-			auto Visit = [&](UEdGraphNode* N)
-			{
-				if (N && !NodeChainId.Contains(N))
-				{
-					NodeChainId.Add(N, ChainId);
-					BFSQ.Enqueue(N);
-				}
-			};
-			if (const TArray<UEdGraphNode*>* S = ExecSuccessors.Find(Cur))   for (UEdGraphNode* N : *S) Visit(N);
-			if (const TArray<UEdGraphNode*>* P = ExecPredecessors.Find(Cur)) for (UEdGraphNode* N : *P) Visit(N);
-			if (const TArray<UEdGraphNode*>* P = DataProviders.Find(Cur))    for (UEdGraphNode* N : *P) Visit(N);
-			if (const TArray<UEdGraphNode*>* C = DataConsumers.Find(Cur))    for (UEdGraphNode* N : *C) Visit(N);
-		}
-	}
-
-	// Sort chains: most event nodes first, then by total node count (largest chains on top).
-	TMap<int32, int32> ChainEventCount;
-	TMap<int32, int32> ChainNodeCount;
-	for (auto& Pair : NodeChainId)
-	{
-		ChainNodeCount.FindOrAdd(Pair.Value)++;
-		if (Pair.Key->IsA<UK2Node_Event>() || Pair.Key->IsA<UK2Node_CustomEvent>())
-			ChainEventCount.FindOrAdd(Pair.Value)++;
-	}
-
-	TArray<int32> ChainOrder;
-	for (int32 i = 0; i < NumChains; i++) ChainOrder.Add(i);
-	ChainOrder.Sort([&](int32 A, int32 B)
-	{
-		int32 AE = ChainEventCount.FindRef(A), BE = ChainEventCount.FindRef(B);
-		if (AE != BE) return AE > BE;
-		return ChainNodeCount.FindRef(A) > ChainNodeCount.FindRef(B);
-	});
-
-	TMap<int32, int32> ChainRank; // original chain ID → display rank
-	for (int32 i = 0; i < ChainOrder.Num(); i++)
-		ChainRank.Add(ChainOrder[i], i);
-
-	// ── Pass 3: Group by (chain rank, layer) and sort within each group ──
-	// Rank → Layer → nodes
-	TMap<int32, TMap<int32, TArray<UEdGraphNode*>>> ChainLayerMap;
-	for (auto& Pair : NodeLayer)
-	{
-		int32 Rank = ChainRank.FindRef(NodeChainId.FindRef(Pair.Key));
-		ChainLayerMap.FindOrAdd(Rank).FindOrAdd(Pair.Value).Add(Pair.Key);
-	}
-
-	// Within each (chain, layer): event nodes first, then exec nodes, then pure nodes.
-	// Within each group sort alphabetically.
-	for (auto& ChainPair : ChainLayerMap)
-	{
-		for (auto& LayerPair : ChainPair.Value)
-		{
-			LayerPair.Value.Sort([](const UEdGraphNode& A, const UEdGraphNode& B)
-			{
-				bool aIsEvent = A.IsA<UK2Node_Event>() || A.IsA<UK2Node_CustomEvent>();
-				bool bIsEvent = B.IsA<UK2Node_Event>() || B.IsA<UK2Node_CustomEvent>();
-				if (aIsEvent != bIsEvent) return aIsEvent;
-
-				bool aHasExec = false, bHasExec = false;
-				for (const UEdGraphPin* P : A.Pins)
-					if (P && P->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) { aHasExec = true; break; }
-				for (const UEdGraphPin* P : B.Pins)
-					if (P && P->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) { bHasExec = true; break; }
-				if (aHasExec != bHasExec) return aHasExec;
-
-				return A.GetNodeTitle(ENodeTitleType::FullTitle).ToString()
-					 < B.GetNodeTitle(ENodeTitleType::FullTitle).ToString();
-			});
-		}
-	}
-
-	// ── Pass 4: Assign positions with per-chain Y bands ──
-	// X uses the global layer key (so all chains share aligned columns).
-	// Y uses a per-chain base offset so chains never overlap vertically.
-	const float ColumnWidth  = 450.0f;
-	const float RowHeight    = 180.0f;
-	const float ChainGap     = 120.0f; // extra vertical gap between independent chains
-	const float MarginLeft   = 100.0f;
-	const float MarginTop    = 100.0f;
-
-	// Compute Y base for each chain rank.
-	TArray<int32> SortedRanks;
-	ChainLayerMap.GetKeys(SortedRanks);
-	SortedRanks.Sort();
-
-	TMap<int32, float> ChainBaseY;
-	float CurY = MarginTop;
-	for (int32 Rank : SortedRanks)
-	{
-		ChainBaseY.Add(Rank, CurY);
-		int32 MaxNodesInLayer = 0;
-		for (auto& LayerPair : ChainLayerMap[Rank])
-			MaxNodesInLayer = FMath::Max(MaxNodesInLayer, LayerPair.Value.Num());
-		CurY += (MaxNodesInLayer * RowHeight) + ChainGap;
-	}
-
 	FScopedTransaction Transaction(NSLOCTEXT("BlueprintService", "AutoLayout", "Auto-Layout Graph"));
-
-	for (auto& ChainPair : ChainLayerMap)
-	{
-		float BaseY = ChainBaseY.FindRef(ChainPair.Key);
-		for (auto& LayerPair : ChainPair.Value)
-		{
-			int32 LayerKey = LayerPair.Key;
-			const TArray<UEdGraphNode*>& Nodes = LayerPair.Value;
-			for (int32 NodeIdx = 0; NodeIdx < Nodes.Num(); NodeIdx++)
-			{
-				UEdGraphNode* Node = Nodes[NodeIdx];
-				Node->Modify();
-				Node->NodePosX = MarginLeft + (LayerKey * ColumnWidth);
-				Node->NodePosY = BaseY + (NodeIdx * RowHeight);
-			}
-		}
-	}
-
+	const int32 NumChains = VibeUELayout::LayeredLayout(LayoutNodes, 100.0f, 100.0f);
 	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 
-	UE_LOG(LogTemp, Log, TEXT("AutoLayoutGraph: Laid out %d nodes in %d chains in %s::%s"),
+	UE_LOG(LogTemp, Log, TEXT("AutoLayoutGraph: Laid out %d nodes in %d components in %s::%s"),
 		LayoutNodes.Num(), NumChains, *BlueprintPath, *GraphName);
 
 	return true;
@@ -10739,352 +9581,20 @@ bool UBlueprintService::AutoLayoutSelectedNodes(
 		return false;
 	}
 
-	// Build a fast lookup set of selected node pointers so adjacency stays within the selection
-	TSet<UEdGraphNode*> SelectedSet(LayoutNodes);
-
-	// ── Pass 1: Layer Assignment (longest-path from roots within the selection) ──
-	TMap<UEdGraphNode*, TArray<UEdGraphNode*>> ExecSuccessors;
-	TMap<UEdGraphNode*, TArray<UEdGraphNode*>> ExecPredecessors;
-	TMap<UEdGraphNode*, TArray<UEdGraphNode*>> DataConsumers;
-
-	for (UEdGraphNode* Node : LayoutNodes)
-	{
-		for (UEdGraphPin* Pin : Node->Pins)
-		{
-			if (!Pin) continue;
-
-			if (Pin->Direction == EGPD_Output && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
-			{
-				for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
-				{
-					if (LinkedPin && LinkedPin->GetOwningNode() && SelectedSet.Contains(LinkedPin->GetOwningNode()))
-					{
-						UEdGraphNode* Target = LinkedPin->GetOwningNode();
-						ExecSuccessors.FindOrAdd(Node).AddUnique(Target);
-						ExecPredecessors.FindOrAdd(Target).AddUnique(Node);
-					}
-				}
-			}
-			else if (Pin->Direction == EGPD_Output && Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
-			{
-				for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
-				{
-					if (LinkedPin && LinkedPin->GetOwningNode() && SelectedSet.Contains(LinkedPin->GetOwningNode()))
-					{
-						DataConsumers.FindOrAdd(Node).AddUnique(LinkedPin->GetOwningNode());
-					}
-				}
-			}
-		}
-	}
-
-	// Identify roots: selected nodes with no incoming exec from another selected node
-	TArray<UEdGraphNode*> Roots;
-	for (UEdGraphNode* Node : LayoutNodes)
-	{
-		bool bHasExecInput = false;
-		for (UEdGraphPin* Pin : Node->Pins)
-		{
-			if (Pin && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec && Pin->Direction == EGPD_Input && Pin->LinkedTo.Num() > 0)
-			{
-				for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
-				{
-					if (LinkedPin && SelectedSet.Contains(LinkedPin->GetOwningNode()))
-					{
-						bHasExecInput = true;
-						break;
-					}
-				}
-			}
-			if (bHasExecInput) break;
-		}
-
-		bool bHasAnyExecPin = false;
-		for (UEdGraphPin* Pin : Node->Pins)
-		{
-			if (Pin && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
-			{
-				bHasAnyExecPin = true;
-				break;
-			}
-		}
-
-		if (!bHasExecInput && bHasAnyExecPin)
-		{
-			Roots.Add(Node);
-		}
-	}
-
-	// BFS to assign exec layers
-	TMap<UEdGraphNode*, int32> NodeLayer;
-	TQueue<UEdGraphNode*> Queue;
-
-	for (UEdGraphNode* Root : Roots)
-	{
-		NodeLayer.Add(Root, 0);
-		Queue.Enqueue(Root);
-	}
-
-	while (!Queue.IsEmpty())
-	{
-		UEdGraphNode* Current;
-		Queue.Dequeue(Current);
-		int32 CurrentLayer = NodeLayer[Current];
-		const TArray<UEdGraphNode*>* Succs = ExecSuccessors.Find(Current);
-		if (Succs)
-		{
-			for (UEdGraphNode* Succ : *Succs)
-			{
-				int32 NewLayer = CurrentLayer + 1;
-				int32* ExistingLayer = NodeLayer.Find(Succ);
-				if (!ExistingLayer || *ExistingLayer < NewLayer)
-				{
-					NodeLayer.Add(Succ, NewLayer);
-					Queue.Enqueue(Succ);
-				}
-			}
-		}
-	}
-
-	// Check if exec-based BFS produced meaningful layering; fall back to data-flow if not
-	bool bExecFlowIsFlat = true;
-	for (auto& Pair : NodeLayer)
-	{
-		if (Pair.Value > 0) { bExecFlowIsFlat = false; break; }
-	}
-
-	if (bExecFlowIsFlat && LayoutNodes.Num() > 1)
-	{
-		TMap<UEdGraphNode*, TArray<UEdGraphNode*>> DataPredecessors;
-		for (UEdGraphNode* Node : LayoutNodes)
-		{
-			for (UEdGraphPin* Pin : Node->Pins)
-			{
-				if (Pin && Pin->Direction == EGPD_Input && Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
-				{
-					for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
-					{
-						if (LinkedPin && LinkedPin->GetOwningNode() && SelectedSet.Contains(LinkedPin->GetOwningNode()))
-						{
-							DataPredecessors.FindOrAdd(Node).AddUnique(LinkedPin->GetOwningNode());
-						}
-					}
-				}
-			}
-		}
-
-		NodeLayer.Empty();
-		TMap<UEdGraphNode*, int32> InDegree;
-		for (UEdGraphNode* Node : LayoutNodes) InDegree.FindOrAdd(Node);
-		for (auto& Pair : DataPredecessors) InDegree.FindOrAdd(Pair.Key) = Pair.Value.Num();
-
-		TQueue<UEdGraphNode*> DataQueue;
-		for (auto& Pair : InDegree)
-		{
-			if (Pair.Value == 0) { NodeLayer.Add(Pair.Key, 0); DataQueue.Enqueue(Pair.Key); }
-		}
-
-		while (!DataQueue.IsEmpty())
-		{
-			UEdGraphNode* Current;
-			DataQueue.Dequeue(Current);
-			int32 CurrentLayer = NodeLayer.FindRef(Current);
-			const TArray<UEdGraphNode*>* Consumers = DataConsumers.Find(Current);
-			if (Consumers)
-			{
-				for (UEdGraphNode* Consumer : *Consumers)
-				{
-					int32 NewLayer = CurrentLayer + 1;
-					int32* ExistingLayer = NodeLayer.Find(Consumer);
-					if (!ExistingLayer || *ExistingLayer < NewLayer)
-						NodeLayer.Add(Consumer, NewLayer);
-					int32& Deg = InDegree.FindOrAdd(Consumer);
-					Deg--;
-					if (Deg <= 0) DataQueue.Enqueue(Consumer);
-				}
-			}
-		}
-
-		for (UEdGraphNode* Node : LayoutNodes)
-		{
-			if (!NodeLayer.Contains(Node)) NodeLayer.Add(Node, 0);
-		}
-	}
-	else
-	{
-		for (UEdGraphNode* Node : LayoutNodes)
-		{
-			if (NodeLayer.Contains(Node)) continue;
-
-			bool bHasExecPin = false;
-			for (UEdGraphPin* Pin : Node->Pins)
-			{
-				if (Pin && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) { bHasExecPin = true; break; }
-			}
-
-			if (!bHasExecPin)
-			{
-				int32 MinConsumerLayer = INT32_MAX;
-				const TArray<UEdGraphNode*>* Consumers = DataConsumers.Find(Node);
-				if (Consumers)
-				{
-					for (UEdGraphNode* Consumer : *Consumers)
-					{
-						const int32* ConsumerLayer = NodeLayer.Find(Consumer);
-						if (ConsumerLayer && *ConsumerLayer < MinConsumerLayer)
-							MinConsumerLayer = *ConsumerLayer;
-					}
-				}
-				if (MinConsumerLayer == INT32_MAX) MinConsumerLayer = 0;
-				NodeLayer.Add(Node, FMath::Max(0, MinConsumerLayer - 1));
-			}
-			else
-			{
-				NodeLayer.Add(Node, 0);
-			}
-		}
-	}
-
-	// ── Pass 2: Chain identification (flood-fill within selection) ──
-	TMap<UEdGraphNode*, TArray<UEdGraphNode*>> DataProviders;
-	for (auto& Pair : DataConsumers)
-		for (UEdGraphNode* Consumer : Pair.Value)
-			DataProviders.FindOrAdd(Consumer).AddUnique(Pair.Key);
-
-	TMap<UEdGraphNode*, int32> NodeChainId;
-	int32 NumChains = 0;
-	for (UEdGraphNode* StartNode : LayoutNodes)
-	{
-		if (NodeChainId.Contains(StartNode)) continue;
-		int32 ChainId = NumChains++;
-		TQueue<UEdGraphNode*> BFSQ;
-		BFSQ.Enqueue(StartNode);
-		NodeChainId.Add(StartNode, ChainId);
-		while (!BFSQ.IsEmpty())
-		{
-			UEdGraphNode* Cur;
-			BFSQ.Dequeue(Cur);
-			auto Visit = [&](UEdGraphNode* N)
-			{
-				if (N && SelectedSet.Contains(N) && !NodeChainId.Contains(N))
-				{
-					NodeChainId.Add(N, ChainId);
-					BFSQ.Enqueue(N);
-				}
-			};
-			if (const TArray<UEdGraphNode*>* S = ExecSuccessors.Find(Cur))   for (UEdGraphNode* N : *S) Visit(N);
-			if (const TArray<UEdGraphNode*>* P = ExecPredecessors.Find(Cur)) for (UEdGraphNode* N : *P) Visit(N);
-			if (const TArray<UEdGraphNode*>* P = DataProviders.Find(Cur))    for (UEdGraphNode* N : *P) Visit(N);
-			if (const TArray<UEdGraphNode*>* C = DataConsumers.Find(Cur))    for (UEdGraphNode* N : *C) Visit(N);
-		}
-	}
-
-	TMap<int32, int32> ChainEventCount;
-	TMap<int32, int32> ChainNodeCount;
-	for (auto& Pair : NodeChainId)
-	{
-		ChainNodeCount.FindOrAdd(Pair.Value)++;
-		if (Pair.Key->IsA<UK2Node_Event>() || Pair.Key->IsA<UK2Node_CustomEvent>())
-			ChainEventCount.FindOrAdd(Pair.Value)++;
-	}
-
-	TArray<int32> ChainOrder;
-	for (int32 i = 0; i < NumChains; i++) ChainOrder.Add(i);
-	ChainOrder.Sort([&](int32 A, int32 B)
-	{
-		int32 AE = ChainEventCount.FindRef(A), BE = ChainEventCount.FindRef(B);
-		if (AE != BE) return AE > BE;
-		return ChainNodeCount.FindRef(A) > ChainNodeCount.FindRef(B);
-	});
-
-	TMap<int32, int32> ChainRank;
-	for (int32 i = 0; i < ChainOrder.Num(); i++)
-		ChainRank.Add(ChainOrder[i], i);
-
-	// ── Pass 3: Group by (chain rank, layer) ──
-	TMap<int32, TMap<int32, TArray<UEdGraphNode*>>> ChainLayerMap;
-	for (auto& Pair : NodeLayer)
-	{
-		int32 Rank = ChainRank.FindRef(NodeChainId.FindRef(Pair.Key));
-		ChainLayerMap.FindOrAdd(Rank).FindOrAdd(Pair.Value).Add(Pair.Key);
-	}
-
-	for (auto& ChainPair : ChainLayerMap)
-	{
-		for (auto& LayerPair : ChainPair.Value)
-		{
-			LayerPair.Value.Sort([](const UEdGraphNode& A, const UEdGraphNode& B)
-			{
-				bool aIsEvent = A.IsA<UK2Node_Event>() || A.IsA<UK2Node_CustomEvent>();
-				bool bIsEvent = B.IsA<UK2Node_Event>() || B.IsA<UK2Node_CustomEvent>();
-				if (aIsEvent != bIsEvent) return aIsEvent;
-
-				bool aHasExec = false, bHasExec = false;
-				for (const UEdGraphPin* P : A.Pins)
-					if (P && P->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) { aHasExec = true; break; }
-				for (const UEdGraphPin* P : B.Pins)
-					if (P && P->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) { bHasExec = true; break; }
-				if (aHasExec != bHasExec) return aHasExec;
-
-				return A.GetNodeTitle(ENodeTitleType::FullTitle).ToString()
-					 < B.GetNodeTitle(ENodeTitleType::FullTitle).ToString();
-			});
-		}
-	}
-
-	// ── Pass 4: Assign positions ──
-	// Use the top-left corner of the current bounding box of the selected nodes as origin,
-	// so the layout stays near where the selection was.
-	float OriginX = FLT_MAX, OriginY = FLT_MAX;
+	// Anchor the layout at the top-left of the current selection so it stays put.
+	float OriginX = (float)LayoutNodes[0]->NodePosX;
+	float OriginY = (float)LayoutNodes[0]->NodePosY;
 	for (UEdGraphNode* Node : LayoutNodes)
 	{
 		OriginX = FMath::Min(OriginX, (float)Node->NodePosX);
 		OriginY = FMath::Min(OriginY, (float)Node->NodePosY);
 	}
-	if (OriginX == FLT_MAX) OriginX = 0.0f;
-	if (OriginY == FLT_MAX) OriginY = 0.0f;
-
-	const float ColumnWidth = 450.0f;
-	const float RowHeight   = 180.0f;
-	const float ChainGap    = 120.0f;
-
-	TArray<int32> SortedRanks;
-	ChainLayerMap.GetKeys(SortedRanks);
-	SortedRanks.Sort();
-
-	TMap<int32, float> ChainBaseY;
-	float CurY = OriginY;
-	for (int32 Rank : SortedRanks)
-	{
-		ChainBaseY.Add(Rank, CurY);
-		int32 MaxNodesInLayer = 0;
-		for (auto& LayerPair : ChainLayerMap[Rank])
-			MaxNodesInLayer = FMath::Max(MaxNodesInLayer, LayerPair.Value.Num());
-		CurY += (MaxNodesInLayer * RowHeight) + ChainGap;
-	}
 
 	FScopedTransaction Transaction(NSLOCTEXT("BlueprintService", "AutoLayoutSelected", "Auto-Layout Selected Nodes"));
-
-	for (auto& ChainPair : ChainLayerMap)
-	{
-		float BaseY = ChainBaseY.FindRef(ChainPair.Key);
-		for (auto& LayerPair : ChainPair.Value)
-		{
-			int32 LayerKey = LayerPair.Key;
-			const TArray<UEdGraphNode*>& Nodes = LayerPair.Value;
-			for (int32 NodeIdx = 0; NodeIdx < Nodes.Num(); NodeIdx++)
-			{
-				UEdGraphNode* Node = Nodes[NodeIdx];
-				Node->Modify();
-				Node->NodePosX = OriginX + (LayerKey * ColumnWidth);
-				Node->NodePosY = BaseY + (NodeIdx * RowHeight);
-			}
-		}
-	}
-
+	const int32 NumChains = VibeUELayout::LayeredLayout(LayoutNodes, OriginX, OriginY);
 	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 
-	UE_LOG(LogTemp, Log, TEXT("AutoLayoutSelectedNodes: Laid out %d/%d requested nodes in %d chains in %s::%s"),
+	UE_LOG(LogTemp, Log, TEXT("AutoLayoutSelectedNodes: Laid out %d/%d requested nodes in %d components in %s::%s"),
 		LayoutNodes.Num(), NodeIds.Num(), NumChains, *BlueprintPath, *GraphName);
 
 	return true;
@@ -11175,8 +9685,22 @@ bool UBlueprintService::GetGraphDefinition(
 		}
 		else if (UK2Node_VariableSet* SetNode = Cast<UK2Node_VariableSet>(Node))
 		{
-			Desc.Type = TEXT("variable_set");
-			Desc.Params.Add(TEXT("variable"), SetNode->VariableReference.GetMemberName().ToString());
+			// Mirror member_get: a set on an external class member (e.g. a component
+			// property) round-trips as member_set so the class binding is preserved.
+			if (SetNode->VariableReference.IsLocalScope() || SetNode->VariableReference.IsSelfContext())
+			{
+				Desc.Type = TEXT("variable_set");
+				Desc.Params.Add(TEXT("variable"), SetNode->VariableReference.GetMemberName().ToString());
+			}
+			else
+			{
+				Desc.Type = TEXT("member_set");
+				Desc.Params.Add(TEXT("member"), SetNode->VariableReference.GetMemberName().ToString());
+				if (UClass* MemberParent = SetNode->VariableReference.GetMemberParentClass())
+				{
+					Desc.Params.Add(TEXT("class"), MemberParent->GetName());
+				}
+			}
 			Desc.Ref = FString::Printf(TEXT("Set_%s_%d"), *SetNode->VariableReference.GetMemberName().ToString(), UnnamedIdx++);
 		}
 		else if (UK2Node_IfThenElse* BranchNode = Cast<UK2Node_IfThenElse>(Node))

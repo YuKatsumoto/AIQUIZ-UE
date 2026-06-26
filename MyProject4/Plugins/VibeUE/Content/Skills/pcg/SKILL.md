@@ -93,10 +93,15 @@ graph = unreal.EditorAssetLibrary.load_asset('/Game/PCG/MyPCGGraph')
 # graph is a PCGGraph — access nodes, input_node, output_node directly
 ```
 
-Or use `manage_asset` to search first (use `action="search"`, not `action="find"`):
+Or search first with the Asset Registry (or Epic's `AssetTools` toolset):
+```python
+ar = unreal.AssetRegistryHelpers.get_asset_registry()
+hits = ar.get_assets_by_class(unreal.TopLevelAssetPath("/Script/PCG", "PCGGraph"))
 ```
-manage_asset(action="search", search_query="MyPCGGraph")
-```
+
+> ⚠️ **`PCGGraph.is_standalone_graph` is deprecated** (issue #465) — it logs a deprecation
+> warning in 5.8. Use the graph's `GraphUsageContext` / usage flags instead of `is_standalone_graph`
+> to tell a top-level graph from a subgraph.
 
 ## Adding Nodes
 
@@ -150,9 +155,9 @@ print(node_types)
 
 | Task | Sub-doc | Sample script |
 |------|---------|---------------|
-| Create / load a PCG graph | (above) | `scripts/build_pcg_graph.pyx` |
-| Add / identify / discover nodes | (above) | `scripts/build_pcg_graph.pyx` |
-| Connect pins / position / remove | `workflows.md` | `scripts/build_pcg_graph.pyx` |
+| Create / load a PCG graph | (above) | `scripts/build_pcg_graph.txt` |
+| Add / identify / discover nodes | (above) | `scripts/build_pcg_graph.txt` |
+| Connect pins / position / remove | `workflows.md` | `scripts/build_pcg_graph.txt` |
 | Place a PCGVolume and generate | `workflows.md` → Placing a PCGVolume | — |
 | Surface Sampler → Mesh Spawner | `workflows.md` → Full Example | — |
 | Settings property names / SMS config | `reference.md` | — |
@@ -165,4 +170,4 @@ print(node_types)
 
 ## Sample scripts (run via `execute_python_code`)
 
-- **`scripts/build_pcg_graph.pyx`** — create a PCG graph and add Surface Sampler + Static Mesh Spawner nodes (native PCG API).
+- **`scripts/build_pcg_graph.txt`** — create a PCG graph and add Surface Sampler + Static Mesh Spawner nodes (native PCG API).

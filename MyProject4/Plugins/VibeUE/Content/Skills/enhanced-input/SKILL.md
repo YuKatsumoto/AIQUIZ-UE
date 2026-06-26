@@ -65,7 +65,7 @@ Verify any other name with `get_available_keys("thumb")` (substring filter) inst
 ### ⚠️ Triggers and Modifiers
 
 **Triggers:** `Pressed`, `Released`, `Down`, `Hold`, `Tap`, `Pulse`  
-**Modifiers:** `Negate`, `DeadZone`, `Scalar`, `SwizzleInputAxisValues`
+**Modifiers:** `Negate`, `DeadZone`, `Scalar`, `SwizzleAxis` (also: `Smooth`, `SmoothDelta`, `ScaleByDeltaTime` — use `get_available_modifier_types()` for the full set)
 
 ---
 
@@ -150,4 +150,4 @@ keys = unreal.InputService.get_available_keys()
 
 ## Sample scripts (run via `execute_python_code`)
 
-- **`scripts/setup_input.pyx`** — create an Input Action + Mapping Context and bind a key.
+- **`scripts/setup_input.txt`** — create an Input Action + Mapping Context and bind a key.
