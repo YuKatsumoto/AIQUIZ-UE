@@ -217,7 +217,7 @@ struct FOverridableFunctionInfo
  * Information about a blueprint function
  */
 USTRUCT(BlueprintType)
-struct FBlueprintFunctionInfo
+struct FVibeUEBlueprintFunctionInfo
 {
 	GENERATED_BODY()
 
@@ -803,7 +803,7 @@ struct FBlueprintDetailedInfo
 	TArray<FBlueprintVariableInfo> Variables;
 
 	UPROPERTY(BlueprintReadWrite, Category = "Blueprint")
-	TArray<FBlueprintFunctionInfo> Functions;
+	TArray<FVibeUEBlueprintFunctionInfo> Functions;
 
 	UPROPERTY(BlueprintReadWrite, Category = "Blueprint")
 	TArray<FBlueprintComponentInfo> Components;
@@ -1006,7 +1006,7 @@ public:
 	 *   funcs = unreal.BlueprintService.list_functions("/Game/BP_Player_Test")
 	 */
 	UFUNCTION(BlueprintCallable, Category = "VibeUE|Blueprints")
-	static TArray<FBlueprintFunctionInfo> ListFunctions(const FString& BlueprintPath);
+	static TArray<FVibeUEBlueprintFunctionInfo> ListFunctions(const FString& BlueprintPath);
 
 	/**
 	 * Enumerate every UEdGraph attached to a Blueprint — ubergraph pages, functions,

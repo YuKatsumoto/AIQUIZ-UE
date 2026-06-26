@@ -271,7 +271,7 @@ FNiagaraCreateResult UNiagaraService::CreateSystem(
 			return nullptr;
 		}
 
-		UNiagaraSystem* NewSystem = Cast<UNiagaraSystem>(Factory->FactoryCreateNew(
+		UNiagaraSystem* NewSystem = Cast<UNiagaraSystem>(static_cast<UFactory*>(Factory)->FactoryCreateNew(
 			UNiagaraSystem::StaticClass(),
 			Package,
 			*SystemName,

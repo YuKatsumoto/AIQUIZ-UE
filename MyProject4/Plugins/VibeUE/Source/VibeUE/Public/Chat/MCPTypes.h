@@ -66,7 +66,7 @@ struct VIBEUE_API FMCPServerConfig
         {
             for (const auto& Pair : (*EnvObj)->Values)
             {
-                Config.Environment.Add(Pair.Key, Pair.Value->AsString());
+                Config.Environment.Add(FString(*Pair.Key), Pair.Value->AsString());
             }
         }
         
@@ -76,7 +76,7 @@ struct VIBEUE_API FMCPServerConfig
         {
             for (const auto& Pair : (*HeadersObj)->Values)
             {
-                Config.Headers.Add(Pair.Key, Pair.Value->AsString());
+                Config.Headers.Add(FString(*Pair.Key), Pair.Value->AsString());
             }
         }
         
@@ -284,7 +284,7 @@ struct VIBEUE_API FMCPConfiguration
                     const TSharedPtr<FJsonObject>* ServerObj;
                     if ((*ServersObj)->TryGetObjectField(Pair.Key, ServerObj))
                     {
-                        Config.Servers.Add(Pair.Key, FMCPServerConfig::FromJson(Pair.Key, *ServerObj));
+                        Config.Servers.Add(FString(*Pair.Key), FMCPServerConfig::FromJson(FString(*Pair.Key), *ServerObj));
                     }
                 }
             }

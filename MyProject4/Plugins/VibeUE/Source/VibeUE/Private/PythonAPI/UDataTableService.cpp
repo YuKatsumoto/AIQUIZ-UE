@@ -725,13 +725,13 @@ bool UDataTableService::AddRows(const FString& TablePath, const FString& RowsJso
 			FJsonSerializer::Serialize((*RowData).ToSharedRef(), Writer);
 		}
 
-		if (AddRow(TablePath, Pair.Key, RowDataJson))
+		if (AddRow(TablePath, FString(*Pair.Key), RowDataJson))
 		{
-			OutResult.SucceededRows.Add(Pair.Key);
+			OutResult.SucceededRows.Add(FString(*Pair.Key));
 		}
 		else
 		{
-			OutResult.FailedRows.Add(Pair.Key);
+			OutResult.FailedRows.Add(FString(*Pair.Key));
 			OutResult.FailedReasons.Add(TEXT("Failed to add row"));
 		}
 	}
@@ -779,7 +779,7 @@ bool UDataTableService::UpdateRow(const FString& TablePath, const FString& RowNa
 	// Apply updates (partial update)
 	for (auto& Pair : JsonObj->Values)
 	{
-		FProperty* Property = ResolveStructProperty(RowStruct, Pair.Key);
+		FProperty* Property = ResolveStructProperty(RowStruct, FString(*Pair.Key));
 		if (!Property)
 		{
 			UE_LOG(LogDataTableService, Warning, TEXT("UpdateRow: Property '%s' not found"), *Pair.Key);
@@ -977,7 +977,7 @@ bool UDataTableService::JsonToRow(
 
 	for (const auto& Pair : JsonObj->Values)
 	{
-		FProperty* Property = ResolveStructProperty(RowStruct, Pair.Key);
+		FProperty* Property = ResolveStructProperty(RowStruct, FString(*Pair.Key));
 		if (!Property)
 		{
 			UE_LOG(LogDataTableService, Warning, TEXT("JsonToRow: Property '%s' not found on %s"), *Pair.Key, *RowStruct->GetName());
@@ -1404,7 +1404,7 @@ bool UDataTableService::JsonToValuePtr(
 
 			for (auto& Pair : (*JsonObj)->Values)
 			{
-				FProperty* InnerProp = ResolveStructProperty(Struct, Pair.Key);
+				FProperty* InnerProp = ResolveStructProperty(Struct, FString(*Pair.Key));
 				if (InnerProp)
 				{
 					FString InnerError;
