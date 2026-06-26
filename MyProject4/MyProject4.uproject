@@ -23,6 +23,14 @@
 				"Linux",
 				"Mac"
 			]
+		},
+		{
+			"Name": "MoverExamples",
+			"Enabled": true
+		},
+		{
+			"Name": "AIAssistant",
+			"Enabled": true
 		}
 	]
 }
