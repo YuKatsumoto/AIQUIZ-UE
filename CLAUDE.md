@@ -346,3 +346,67 @@ spline moves; clearance/exclusion via `Distance` → `Filter` against sampled sp
 "mask one system by another" need (e.g. grass off the road) solved with the RVT pattern (§7). Externalize
 the tuning knobs (clearance radii, cell sizes, densities) as graph params surfaced to the volume actor so
 they're editable without touching nodes. Build each layer, verify it (§12), then move on.
+
+---
+
+## 14. Blueprint & level-edit hard-won lessons (quiz-wall / ocean session)
+
+These are reflections from a real failure where quiz-wall "doors" disappeared and I burned a lot of
+effort on the wrong diagnosis. Read them before touching any Blueprint actor in a level.
+
+1. **When a BP actor's components/visuals ALL vanish, suspect a COMPILE ERROR first — not "SCS
+   corruption".** Symptom seen: every `BP_QuizWall` instance dropped to a lone `BillboardComponent`
+   (the whole door component tree gone) on every fresh load/spawn; the doors had only been surviving in
+   the previous session's *memory*. Real cause: the Blueprint was in **`BS_ERROR`**. A `Call Function`
+   node (`AddScore`, calling another BP) still referenced a **renamed/removed parameter pin**
+   ("Passed Wall"). A BP that fails to compile never builds its SCS into the generated class / CDO, so
+   **every** component fails to construct on every instance. Diagnose FAST:
+   `bp.get_editor_property("status")` (`== BlueprintStatus.BS_ERROR`?), the bool return of
+   `compile_blueprint` (False), and the compiler log in `Saved/Logs/*.log`
+   (`LogBlueprint: Error: [AssetLog] … [コンパイラ] …` — it names the node and pin). Fix: refresh the
+   offending node so its pins re-sync to the current signature (`RefreshNode`, or right-click →
+   "Refresh Nodes"). **Whenever you rename/remove a BP function's parameter, every CALLER node keeps a
+   stale pin and must be refreshed**, or the caller BP won't compile.
+
+2. **`gather_subobject_data_for_blueprint` returns each component TWICE — that is NORMAL.** A healthy
+   2-component test BP gathers ~6 handles (CDO + root + 2×2). Do NOT read this as "duplicate SCS nodes".
+   Before treating any count/shape as a bug, **measure a known-healthy reference** (a throwaway fresh BP)
+   and compare. Pin down the root cause (compiler log) BEFORE any destructive fix.
+
+3. **Heavy BP structural surgery resets placed instance transforms.** Deleting + re-adding components,
+   swapping BP versions, and repeated recompiles reset all 18 manually-placed wall instances to (0,0,0)
+   (they stacked at the origin → looked like a single wall). If a BP has hand-placed instances in a
+   level, AVOID structural edits to it; if unavoidable, **record every instance's transform first** and
+   re-verify positions after the recompile.
+
+4. **Verify the ACTUAL game state visually before saving/committing — not just the thing you fixed.** I
+   confirmed the doors were back, then saved the level and pushed — while every wall was stacked at the
+   origin (only caught when the user pointed it out, and the bad state was already pushed). Before
+   `save_current_level` + commit/push: enumerate actor counts AND positions, and capture a WIDE shot of
+   the real layout. "Done" includes the surrounding state, not only the symptom you targeted.
+
+5. **Deleting an asset triggers BP-actor reconstruction across the whole level.** Deleting an unused
+   material via the content browser reconstructed the level's BP actors, which re-ran the broken compile
+   and wiped the in-memory doors. Don't delete assets while the level holds a BP that is in an
+   unstable / uncompiled state — fix the BP first, then clean up.
+
+6. **Don't run destructive "fixes" on a misdiagnosis.** I rebuilt the entire component tree (delete-all +
+   re-add) chasing a phantom "duplication" bug; it was wasted and risky because the real fault was a
+   one-node compile error. Cheap diagnosis (status + compiler log + a healthy reference) first;
+   destructive surgery only after the cause is proven.
+
+7. **Ocean: a stylized opaque plane beats the Water plugin for a thin elevated causeway.** Surrounding a
+   narrow raised deck with `WaterBodyOcean` shows a view-dependent disc from above (near tessellated
+   water shows the bottom through translucency; the far mesh reflects sky) that reads as a "hole", and
+   seafloor-depth tuning does NOT stably remove it. Its default Gerstner waves are huge
+   (`get_max_wave_height` ≈ 508 uu) and wash over low decks. For a uniform, predictable stylized sea,
+   use a **single large flat StaticMesh plane + an opaque stylized water material** (two panning tiling
+   normals + Fresnel-blended base color + low roughness; set the material **`two_sided`** so it never
+   disappears when the camera dips below the surface). No depth/transparency artifacts, identical from
+   every angle. Reserve the Water plugin for cases that genuinely need shoreline/waves and suit it.
+
+8. **Back up an asset before risky edits; restoring from git needs the file unlocked.**
+   `git checkout HEAD -- <asset>` fails with "unable to unlink" while the editor holds the lock — close
+   the editor first — and the editor only picks up the on-disk version after a restart (loaded packages
+   are cached). Also note the only committed version may already contain the bug, so keep a scratch copy
+   of the *working* asset before destructive edits.
