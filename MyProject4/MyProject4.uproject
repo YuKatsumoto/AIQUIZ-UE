@@ -28,15 +28,6 @@
 			"Enabled": true
 		},
 		{
-			"Name": "UnrealClaude",
-			"Enabled": true,
-			"SupportedTargetPlatforms": [
-				"Win64",
-				"Linux",
-				"Mac"
-			]
-		},
-		{
 			"Name": "MoverExamples",
 			"Enabled": true
 		},
